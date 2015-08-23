@@ -124,6 +124,8 @@ get_cache_size(char *s)
 	return size;
 }
 
+//判断flashcache模块是否已经加载   
+// /proc/modules中记录模块信息  读取该文件、判断是否存在flashcache字符串
 static int 
 module_loaded(void)
 {
@@ -150,7 +152,7 @@ load_module(void)
 {
 	FILE *fp;
 	char line[8192];
-
+	//若没有加载则调用system执行modprobe flashcache加载模块
 	if (!module_loaded()) {
 		if (verbose)
 			fprintf(stderr, "Loading Flashcache Module\n");
@@ -159,7 +161,7 @@ load_module(void)
 			fprintf(stderr, "Could not load Flashcache Module\n");
 			exit(1);
 		}
-	} else if (verbose)
+	} else if (verbose)//verbose表示是否显示详细信息
 			fprintf(stderr, "Flashcache Module already loaded\n");
 	fp = fopen("/proc/flashcache/flashcache_version", "ro");
 	fgets(line, 8190, fp);
@@ -431,8 +433,8 @@ main(int argc, char **argv)
 		check_sure();
 	}
 	//新增  先提前输出一遍命令内容  共享cache_mode、block_size、assoc、md_block_size
-	printf("echo 0 %lu flashcache %s %s %s %s %d 2 %lu %lu %lu %d %lu %lu"
-		" | dmsetup create %s",
+	printf("echo 0 %lu flashcache disk=%s ssd=%s nvram=%s cachedev=%s cachemode=%d 2 blocksize=%lu cachesize=%lu nvramsize=%lu assoc=%d diskassoc=%lu md_block_size=%lu"
+		" | dmsetup create %s.\n",
 		disk_devsize, disk_devname, ssd_devname, nvram_devname, cachedev, cache_mode, block_size, 
 		cache_size, nvram_cache_size, associativity, disk_associativity, md_block_size,
 		cachedev);
@@ -455,6 +457,7 @@ echo 0 20971520 flashcache /dev/loop0 /dev/pmb /dev/pma cache1g8g 1 2 8 0 0 512 
 	/* Go ahead and create the cache.
 	 * XXX - Should use the device mapper library for this.
 	 */
+	//加载flashcache模块
 	load_module();
 	if (verbose)
 		fprintf(stderr, "Creating FlashCache Volume : \"%s\"\n", dmsetup_cmd);

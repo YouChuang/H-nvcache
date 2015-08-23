@@ -1073,19 +1073,20 @@ static struct file_operations flashcache_version_operations = {
 	.release	= single_release,
 };
 
+//创建flashcache目录和flashcache_version文件
 void
 flashcache_module_procfs_init(void)
 {
-#ifdef CONFIG_PROC_FS
+#ifdef CONFIG_PROC_FS   //根据CONFIG_PROC_FS是否定义来选择proc文件系统
 	struct proc_dir_entry *entry;
-
+	//创建flashcache目录
 	if (proc_mkdir("flashcache", NULL)) {
 		#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
-			entry = create_proc_entry("flashcache/flashcache_version", 0, NULL);
+			entry = create_proc_entry("flashcache/flashcache_version", 0, NULL);//创建proc文件
 			if (entry)
 				entry->proc_fops =  &flashcache_version_operations;
 		#endif
-		#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,10,0)
+		#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,10,0)//3.10以后采用proc_create来替代create_proc_entry
 			entry = proc_create("flashcache/flashcache_version", 0, NULL, &flashcache_version_operations);
 		#endif	
 

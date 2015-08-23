@@ -62,8 +62,9 @@
 struct cache_c *cache_list_head = NULL;
 struct work_struct _kcached_wq;
 u_int64_t size_hist[33];
-
+//kmem_cache为Linux内核提供的快速内存缓存接口，内存块大小相同，分配后并不释放而是留下作为缓存，所以下一次分配速度快
 struct kmem_cache *_job_cache;
+//内存池
 mempool_t *_job_pool;
 struct kmem_cache *_pending_job_cache;
 mempool_t *_pending_job_pool;
@@ -98,9 +99,11 @@ flashcache_wait_schedule(void *unused)
 	return 0;
 }
 
+//分别创建kcached-jobs和pending-jobs的缓存对象和内存池
 static int 
 flashcache_jobs_init(void)
 {
+	//创建kmem_cache缓存对象
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,23)
 	_job_cache = kmem_cache_create("kcached-jobs",
 	                               sizeof(struct kcached_job),
@@ -114,7 +117,7 @@ flashcache_jobs_init(void)
 #endif
 	if (!_job_cache)
 		return -ENOMEM;
-
+	//基于上面的缓存对象创建内存池
 	_job_pool = mempool_create(MIN_JOBS, mempool_alloc_slab,
 	                           mempool_free_slab, _job_cache);
 	if (!_job_pool) {
@@ -850,6 +853,7 @@ flashcache_get_dev(struct dm_target *ti, char *pth, struct dm_dev **dmd,
 	return rc;
 }
 
+//echo 0 20971520 flashcache /dev/loop0 /dev/pmb /dev/pma cache1g8g 1 2 8 0 0 512 266287972864 8 | dmsetup create cache1g8g
 /*
  * Construct a cache mapping.
  *  arg[0]: path to source device
@@ -1610,6 +1614,7 @@ flashcache_status(struct dm_target *ti, status_type_t type,
 #endif
 }
 
+//定义新的设备类型，名字，ctr、map、dtr函数
 static struct target_type flashcache_target = {
 	.name   = "flashcache",
 	.version= {1, 0, 4},
@@ -1715,13 +1720,14 @@ flashcache_init(void)
 {
 	int r;
 
-	r = flashcache_jobs_init();
+	r = flashcache_jobs_init();//创建kcached-jobs和pending-jobs内存池
 	if (r)
 		return r;
+	//初始化原子变量为0
 	atomic_set(&nr_cache_jobs, 0);
 	atomic_set(&nr_pending_jobs, 0);
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,22)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,22) //小于2.6.22
 	r = dm_io_get(FLASHCACHE_ASYNC_SIZE);
 	if (r) {
 		DMERR("flashcache_init: Could not size dm io pool");
@@ -1733,18 +1739,18 @@ flashcache_init(void)
 		dm_io_put(FLASHCACHE_ASYNC_SIZE);
 		return r;
 	}
-#else /* LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,22) */
+#else /* LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,22) */ //大于3.0  或者2.6.22到3.0
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,0,0)) || (defined(RHEL_RELEASE_CODE) && (RHEL_RELEASE_CODE >= 1538))
 	flashcache_io_client = dm_io_client_create();
 #else
-	flashcache_io_client = dm_io_client_create(FLASHCACHE_COPY_PAGES);
+	flashcache_io_client = dm_io_client_create(FLASHCACHE_COPY_PAGES);//创建do_io_client结构体，为dm_io执行分配内存池
 #endif
 	if (IS_ERR(flashcache_io_client)) {
 		DMERR("flashcache_init: Failed to initialize DM IO client");
 		return r;
 	}
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,26)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,26)//2.6.22-2.6.26|3.0-3.9|大于3.9|2.26-3.0  
 	r = kcopyd_client_create(FLASHCACHE_COPY_PAGES, &flashcache_kcp_client);
 #elif ((LINUX_VERSION_CODE >= KERNEL_VERSION(3,0,0)) && (LINUX_VERSION_CODE < KERNEL_VERSION(3,9,0))) || (defined(RHEL_RELEASE_CODE) && (RHEL_RELEASE_CODE >= 1538) && (RHEL_RELEASE_CODE <= 1540))
 	flashcache_kcp_client = dm_kcopyd_client_create();
@@ -1757,7 +1763,7 @@ flashcache_init(void)
                r = PTR_ERR(flashcache_kcp_client);
        }
 #else /* .26 <= VERSION < 3.0.0 */
-	r = dm_kcopyd_client_create(FLASHCACHE_COPY_PAGES, &flashcache_kcp_client);
+	r = dm_kcopyd_client_create(FLASHCACHE_COPY_PAGES, &flashcache_kcp_client);//创建dm_kcopyd_client结构体，为kcopyd服务提供工作队列
 #endif /* .26 <= VERSION < 3.0.0 */
 
 	if (r) {
@@ -1765,27 +1771,29 @@ flashcache_init(void)
 		DMERR("flashcache_init: Failed to initialize kcopyd client");
 		return r;
 	}
-#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,22) */
-
+#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,22) */    //结束上面的if-elif-else-endif
+//初始化工作队列，指定do_work来处理work_struct队列中的任务，func指针指向do_work函数将两者绑定
+//以后调用schedule_work来唤醒events线程调用do_work来处理work_struct中的任务
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
 	INIT_WORK(&_kcached_wq, do_work, NULL);
 #else
 	INIT_WORK(&_kcached_wq, do_work);
 #endif
 	for (r = 0 ; r < 33 ; r++)
-		size_hist[r] = 0;
-	r = dm_register_target(&flashcache_target);
+		size_hist[r] = 0;//初始化统计数组
+	r = dm_register_target(&flashcache_target);//注册新的设备类型
 	if (r < 0) {
 		DMERR("cache: register failed %d", r);
 	}
 
         printk("flashcache: %s initialized\n", flashcache_sw_version);
 
-	flashcache_module_procfs_init();
+	flashcache_module_procfs_init();//在proc文件系统中创建对应的flashcache目录和文件
+	//
 	flashcache_control = (struct flashcache_control_s *)
 		kmalloc(sizeof(struct flashcache_control_s), GFP_KERNEL);
 	flashcache_control->synch_flags = 0;
-	register_reboot_notifier(&flashcache_notifier);
+	register_reboot_notifier(&flashcache_notifier);//机器关机或者重启时调用处理
 	return r;
 }
 
