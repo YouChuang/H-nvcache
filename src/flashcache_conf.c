@@ -387,6 +387,7 @@ flashcache_writethrough_create(struct cache_c *dmc)
 	return 0;
 }
 
+//初始化缓存设备的元数据块和超级块
 static int 
 flashcache_writeback_create(struct cache_c *dmc, int force)
 {
@@ -408,10 +409,10 @@ flashcache_writeback_create(struct cache_c *dmc, int force)
 		DMERR("flashcache_writeback_create: Unable to allocate sector");
 		return 1;
 	}
-	where.bdev = dmc->cache_dev->bdev;
-	where.sector = 0;
-	where.count = dmc->md_block_size;
-	error = flashcache_dm_io_sync_vm(dmc, &where, READ, header);
+	where.bdev = dmc->cache_dev->bdev;//读取数据的位置为flash设备
+	where.sector = 0;//从设备位置0开始读取  首先读取的数据就是超级块
+	where.count = dmc->md_block_size;//读取的数据大小，一个元数据块的大小
+	error = flashcache_dm_io_sync_vm(dmc, &where, READ, header);//从cache中读取superblock信息到header
 	if (error) {
 		vfree((void *)header);
 		DMERR("flashcache_writeback_create: Could not read cache superblock %lu error %d !",
@@ -421,23 +422,26 @@ flashcache_writeback_create(struct cache_c *dmc, int force)
 	if (!force &&
 	    ((header->cache_sb_state == CACHE_MD_STATE_DIRTY) ||
 	     (header->cache_sb_state == CACHE_MD_STATE_CLEAN) ||
-	     (header->cache_sb_state == CACHE_MD_STATE_FASTCLEAN))) {
+	     (header->cache_sb_state == CACHE_MD_STATE_FASTCLEAN))) {//若是读取到的超级块中数据块有状态则说明有缓存已经存在，需要强制recreate
 		vfree((void *)header);
 		DMERR("flashcache_writeback_create: Existing Cache Detected, use force to re-create");
 		return 1;
 	}
 	/* Compute the size of the metadata, including header. 
 	   Note dmc->size is in raw sectors */
+	//缓存空间元数据块总个数=(总的元数据块个数=缓存空间总的数据块个数/每个元数据块所能描述的缓存数据块个数)
+	//+超级块+前面计算中可能未满一个扇区的元数据块
 	dmc->md_blocks = INDEX_TO_MD_BLOCK(dmc, dmc->size / dmc->block_size) + 1 + 1;
+	//缓存空间减去元数据块的大小，剩下的就是所有可用于缓存数据的空间
 	dmc->size -= dmc->md_blocks * MD_SECTORS_PER_BLOCK(dmc);	/* total sectors available for cache */
-	dmc->size /= dmc->block_size;
-	dmc->size = (dmc->size / dmc->assoc) * dmc->assoc;	
+	dmc->size /= dmc->block_size;//转换成数据块为单位
+	dmc->size = (dmc->size / dmc->assoc) * dmc->assoc;//减去分组的余数，得到的是分组大小的整数倍个数的缓存数据空间数据块大小	
 	/* Recompute since dmc->size was possibly trunc'ed down */
-	dmc->md_blocks = INDEX_TO_MD_BLOCK(dmc, dmc->size) + 1 + 1;
+	dmc->md_blocks = INDEX_TO_MD_BLOCK(dmc, dmc->size) + 1 + 1;//重新调整元数据块的总个数
 	DMINFO("flashcache_writeback_create: md_blocks = %d, md_sectors = %d\n", 
 	       dmc->md_blocks, dmc->md_blocks * MD_SECTORS_PER_BLOCK(dmc));
 	dev_size = to_sector(dmc->cache_dev->bdev->bd_inode->i_size);
-	cache_size = dmc->md_blocks * MD_SECTORS_PER_BLOCK(dmc) + (dmc->size * dmc->block_size);
+	cache_size = dmc->md_blocks * MD_SECTORS_PER_BLOCK(dmc) + (dmc->size * dmc->block_size);//元数据空间大小+数据空间大小
 	if (cache_size > dev_size) {
 		DMERR("Requested cache size exceeds the cache device's capacity" \
 		      "(%lu>%lu)",
@@ -452,6 +456,8 @@ flashcache_writeback_create(struct cache_c *dmc, int force)
 	       order >> 10, sizeof(struct cacheblock), dmc->size,
 	       cache_size >> (20-SECTOR_SHIFT), dmc->assoc, dmc->block_size,
 	       dmc->block_size >> (10-SECTOR_SHIFT));
+	//分配在内存中存放元数据的空间，并初始化  默认状态为INVALID，不可用，即缓存块的初始状态
+	//这样的话nvram缓存的元数据怎么和flash的结合到一块？
 	dmc->cache = (struct cacheblock *)vmalloc(order);
 	if (!dmc->cache) {
 		vfree((void *)header);
@@ -469,7 +475,7 @@ flashcache_writeback_create(struct cache_c *dmc, int force)
 		dmc->cache[i].lru_state = 0;
 		dmc->cache[i].nr_queued = 0;
 	}
-	meta_data_cacheblock = (struct flash_cacheblock *)vmalloc(METADATA_IO_BLOCKSIZE);
+	meta_data_cacheblock = (struct flash_cacheblock *)vmalloc(METADATA_IO_BLOCKSIZE);//256*1024
 	if (!meta_data_cacheblock) {
 		DMERR("flashcache_writeback_create: Unable to allocate memory");
 		DMERR("flashcache_writeback_create: Could not write out cache metadata !");
@@ -489,11 +495,13 @@ flashcache_writeback_create(struct cache_c *dmc, int force)
 		next_ptr++;
 		slots_written++;
 		j--;
-		if (j == 0) {
+		
+		if (j == 0) {//一个元数据块的几个数据块描述符结构用完
 			/* 
 			 * Filled the block, write and goto the next metadata block.
 			 */
-			if (slots_written == MD_SLOTS_PER_BLOCK(dmc) * METADATA_IO_NUM_BLOCKS(dmc)) {
+			
+			if (slots_written == MD_SLOTS_PER_BLOCK(dmc) * METADATA_IO_NUM_BLOCKS(dmc)) {//数据块个数达到一定限度？
 				/*
 				 * Wrote out an entire metadata IO block, write the block to the ssd.
 				 */
@@ -886,8 +894,8 @@ flashcache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		r = ENOMEM;
 		goto bad;
 	}
-
-	dmc->tgt = ti;
+//disk=/dev/loop0 ssd=/dev/pmb nvram=/dev/pma cachedev=cache1g8g cachemode=1 2 blocksize=8 cachesize=0 nvramsize=0 assoc=512 diskassoc=266287972864 md_block_size=8
+	dmc->tgt = ti;//初始化虚拟设备dm_target
 	if ((r = flashcache_get_dev(ti, argv[0], &dmc->disk_dev, 
 				    dmc->disk_devname, ti->len))) {
 		if (r == -EBUSY)
@@ -904,42 +912,52 @@ flashcache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 			ti->error = "flashcache: Cache device lookup failed";
 		goto bad2;
 	}
-
-	if (sscanf(argv[2], "%s", (char *)&dmc->dm_vdevname) != 1) {
-		ti->error = "flashcache: Virtual device name lookup failed";
+	//新增 初始化nvram_dev设备
+	if ((r = flashcache_get_dev(ti, argv[2], &dmc->nvram_dev,
+				    dmc->nvram_devname, 0))) {
+		if (r == -EBUSY)
+			ti->error = "flashcache: NVRAM Cache device is busy, cannot create cache";
+		else
+			ti->error = "flashcache: NVRAM Cache device lookup failed";
 		goto bad3;
+	}
+	//新增  修改了下面所有的bad3为bad4
+	if (sscanf(argv[3], "%s", (char *)&dmc->dm_vdevname) != 1) {
+		ti->error = "flashcache: Virtual device name lookup failed";
+		goto bad4;
 	}
 	
 	r = flashcache_kcached_init(dmc);
 	if (r) {
 		ti->error = "Failed to initialize kcached";
-		goto bad3;
+		goto bad4;
 	}
 
-	if (sscanf(argv[3], "%u", &dmc->cache_mode) != 1) {
+	if (sscanf(argv[4], "%u", &dmc->cache_mode) != 1) {
 		ti->error = "flashcache: sscanf failed, invalid cache mode";
 		r = -EINVAL;
-		goto bad3;
+		goto bad4;
 	}
 	if (dmc->cache_mode < FLASHCACHE_WRITE_BACK || 
-	    dmc->cache_mode > FLASHCACHE_WRITE_AROUND) {
+	    dmc->cache_mode > FLASHCACHE_WRITE_AROUND) {//判断初始化的cache_mode是否在规定的值范围内[WB1,WT2,WA3]
 		DMERR("cache_mode = %d", dmc->cache_mode);
 		ti->error = "flashcache: Invalid cache mode";
 		r = -EINVAL;
-		goto bad3;
+		goto bad4;
 	}
 	
+	//处理WB模式
 	/* 
 	 * XXX - Persistence is totally ignored for write through and write around.
 	 * Maybe this should really be moved to the end of the param list ?
 	 */
 	if (dmc->cache_mode == FLASHCACHE_WRITE_BACK) {
-		if (argc >= 5) {
-			if (sscanf(argv[4], "%u", &persistence) != 1) {
+		if (argc >= 6) {//新增 个数从5个改为6个，若是传入的参数个数达到6个，则说明还有persistence参数
+			if (sscanf(argv[5], "%u", &persistence) != 1) {
 				ti->error = "flashcache: sscanf failed, invalid cache persistence";
 				r = -EINVAL;
-				goto bad3;
-			}
+				goto bad4;
+			}//判断传入的persistence值是否合法 reload-1，create-2，forcecreate-3
 			if (persistence < CACHE_RELOAD || persistence > CACHE_FORCECREATE) {
 				DMERR("persistence = %d", persistence);
 				ti->error = "flashcache: Invalid cache persistence";
@@ -947,118 +965,149 @@ flashcache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 				goto bad3;
 			}			
 		}
-		if (persistence == CACHE_RELOAD) {
+		if (persistence == CACHE_RELOAD) {//默认为CREATE模式，暂时不考虑RELOAD情况
 			if (flashcache_writeback_load(dmc)) {
 				ti->error = "flashcache: Cache reload failed";
 				r = -EINVAL;
-				goto bad3;
+				goto bad4;
 			}
 			goto init; /* Skip reading cache parameters from command line */
 		}
 	} else
 		persistence = CACHE_CREATE;
 
-	if (argc >= 6) {
-		if (sscanf(argv[5], "%u", &dmc->block_size) != 1) {
+	if (argc >= 7) {//新增 个数从6改为7  
+		if (sscanf(argv[6], "%u", &dmc->block_size) != 1) {
 			ti->error = "flashcache: Invalid block size";
 			r = -EINVAL;
-			goto bad3;
+			goto bad4;
 		}
-		if (!dmc->block_size || (dmc->block_size & (dmc->block_size - 1))) {
+		if (!dmc->block_size || (dmc->block_size & (dmc->block_size - 1))) {//block_size大小需要为偶数且不为0
 			ti->error = "flashcache: Invalid block size";
 			r = -EINVAL;
-			goto bad3;
+			goto bad4;
 		}
 	}
 	
 	if (!dmc->block_size)
-		dmc->block_size = DEFAULT_BLOCK_SIZE;
-	dmc->block_shift = ffs(dmc->block_size) - 1;
-	dmc->block_mask = dmc->block_size - 1;
+		dmc->block_size = DEFAULT_BLOCK_SIZE;//若是为0则改为默认的数据块大小8个扇区
+	dmc->block_shift = ffs(dmc->block_size) - 1;//求出移位个数
+	dmc->block_mask = dmc->block_size - 1;//求出掩码的值
 
 	/* dmc->size is specified in sectors here, and converted to blocks later */
-	if (argc >= 7) {
-		if (sscanf(argv[6], "%lu", &dmc->size) != 1) {
+	if (argc >= 8) {//新增 从7改为8 
+		if (sscanf(argv[7], "%lu", &dmc->size) != 1) {
 			ti->error = "flashcache: Invalid cache size";
 			r = -EINVAL;
-			goto bad3;
+			goto bad4;
 		}
 	}
-	
-	if (!dmc->size)
+
+	/*
+	struct dm_dev {
+	    struct block_device *bdev;
+        fmode_t mode;
+        char name[16];
+	};
+	struct block_device {
+		struct inode *          bd_inode;       //will die
+		struct super_block *    bd_super;
+		struct list_head        bd_inodes;
+	}
+	struct inode {
+		struct super_block      *i_sb;
+		struct address_space    *i_mapping;
+		loff_t                  i_size;
+
+	}
+	*/	
+	if (!dmc->size)//如果传入的flash缓存空间大小为0，则设置为整个flash设备的大小  转换为sector格式
 		dmc->size = to_sector(dmc->cache_dev->bdev->bd_inode->i_size);
 
-	if (argc >= 8) {
-		if (sscanf(argv[7], "%u", &dmc->assoc) != 1) {
+	//新增 获取nvram缓存空间大小
+	if (argc >= 9) {//新增 从7改为8 
+		if (sscanf(argv[8], "%lu", &dmc->nvram_size) != 1) {
+			ti->error = "flashcache: Invalid nvram cache size";
+			r = -EINVAL;
+			goto bad4;
+		}
+	}
+	if (!dmc->nvram_size)
+		dmc->nvram_size = to_sector(dmc->nvram_dev->bdev->bd_inode->i_size);
+
+	if (argc >= 10) {//获取缓存分组大小
+		if (sscanf(argv[9], "%u", &dmc->assoc) != 1) {
 			ti->error = "flashcache: Invalid cache associativity";
 			r = -EINVAL;
-			goto bad3;
+			goto bad4;
 		}
 		if (!dmc->assoc || (dmc->assoc & (dmc->assoc - 1)) ||
 		    dmc->assoc > FLASHCACHE_MAX_ASSOC ||
 		    dmc->assoc < FLASHCACHE_MIN_ASSOC ||
-		    dmc->size < dmc->assoc) {
+		    dmc->size < dmc->assoc) {//判断assoc的大小是否合法  MAX_ASSOC为8192 MIN_ASSOC为256，以及空间大小是否小于分组个数
 			ti->error = "flashcache: Invalid cache associativity";
 			r = -EINVAL;
-			goto bad3;
+			goto bad4;
 		}
 	}
 	if (!dmc->assoc)
-		dmc->assoc = DEFAULT_CACHE_ASSOC;
-	dmc->assoc_shift = ffs(dmc->assoc) - 1;
+		dmc->assoc = DEFAULT_CACHE_ASSOC;//默认的分组大小 512
+	dmc->assoc_shift = ffs(dmc->assoc) - 1;//移位个数
 
-	if (argc >= 8) {
-		if (sscanf(argv[8], "%u", &dmc->disk_assoc) != 1) {
+	if (argc >= 11) {
+		if (sscanf(argv[10], "%u", &dmc->disk_assoc) != 1) {
 			ti->error = "flashcache: Invalid disk associativity";
 			r = -EINVAL;
-			goto bad3;
+			goto bad4;
 		}
 		if (!dmc->disk_assoc || (dmc->disk_assoc & (dmc->disk_assoc - 1)) ||
 		    dmc->disk_assoc > FLASHCACHE_MAX_DISK_ASSOC ||
 		    dmc->disk_assoc < FLASHCACHE_MIN_DISK_ASSOC ||
 		    dmc->size < dmc->disk_assoc ||
-		    (dmc->assoc * dmc->block_shift) < dmc->disk_assoc) {
+		    (dmc->assoc * dmc->block_shift) < dmc->disk_assoc) {//256-2048
 			printk(KERN_ERR "Invalid Disk Assoc assoc %d disk_assoc %d size %ld\n",
 			       dmc->assoc, dmc->disk_assoc, dmc->size);
 			ti->error = "flashcache: Invalid disk associativity";
 			r = -EINVAL;
-			goto bad3;
+			goto bad4;
 		}
 	}
 	if (dmc->disk_assoc != 0)
 		dmc->disk_assoc_shift = ffs(dmc->disk_assoc) - 1;
-
+	//WB模式下是有缓存的，所以可以设备元数据大小
 	if (dmc->cache_mode == FLASHCACHE_WRITE_BACK) {
-		if (argc >= 9) {
-			if (sscanf(argv[9], "%u", &dmc->md_block_size) != 1) {
+		if (argc >= 12) {
+			if (sscanf(argv[11], "%u", &dmc->md_block_size) != 1) {
 				ti->error = "flashcache: Invalid metadata block size";
 				r = -EINVAL;
-				goto bad3;
+				goto bad4;
 			}
 			if (!dmc->md_block_size || (dmc->md_block_size & (dmc->md_block_size - 1)) ||
 			    dmc->md_block_size > FLASHCACHE_MAX_MD_BLOCK_SIZE) {
 				ti->error = "flashcache: Invalid metadata block size";
 				r = -EINVAL;
-				goto bad3;
+				goto bad4;
 			}
+			//判断缓存分组大小是否小于一个元数据块所能表示的缓存块个数，这个有什么意义？
 			if (dmc->assoc < 
 			    (dmc->md_block_size * 512 / sizeof(struct flash_cacheblock))) {
 				ti->error = "flashcache: Please choose a smaller metadata block size or larger assoc";
 				r = -EINVAL;
-				goto bad3;
+				goto bad4;
 			}
 		}
 
 		if (!dmc->md_block_size)
-			dmc->md_block_size = DEFAULT_MD_BLOCK_SIZE;
-
+			dmc->md_block_size = DEFAULT_MD_BLOCK_SIZE;//默认为8
+		//缓存元数据块的大小不能小于缓存设备本身的数据块大小
 		if (dmc->md_block_size * 512 < dmc->cache_dev->bdev->bd_block_size) {
 			ti->error = "flashcache: Metadata block size must be >= cache device sector size";
 			r = -EINVAL;
-			goto bad3;
+			goto bad4;
 		}
 	}
 
+	//若是缓存模式为WB，且需要创建缓存
 	if (dmc->cache_mode == FLASHCACHE_WRITE_BACK) {	
 		if (persistence == CACHE_CREATE) {
 			if (flashcache_writeback_create(dmc, 0)) {
@@ -1220,7 +1269,9 @@ init:
 	flashcache_ctr_procfs(dmc);
 
 	return 0;
-
+//新增 bad4处理nvram_devname
+bad4:
+	dm_put_device(ti, dmc->nvram_dev);
 bad3:
 	dm_put_device(ti, dmc->cache_dev);
 bad2:

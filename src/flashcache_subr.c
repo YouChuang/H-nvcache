@@ -928,7 +928,7 @@ flashcache_dm_io_async_vm(struct cache_c *dmc, unsigned int num_regions,
 }
 #endif
 
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,29)
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,29)//小于2.6.29的内核版本 使用931-993行来进行处理
 /*
  * Wrappers for doing DM sync IO, using DM async IO.
  * It is a shame we need do this, but DM sync IO is interruptible :(
@@ -991,7 +991,7 @@ flashcache_dm_io_sync_vm(struct cache_c *dmc,
 	spin_unlock_irq(&flashcache_dm_io_sync_spinlock);
 	return state.error;
 }
-#else
+#else//内核版本大于2.6.29
 int
 flashcache_dm_io_sync_vm(struct cache_c *dmc, struct dm_io_region *where, int rw, void *data)
 {
@@ -1004,7 +1004,7 @@ flashcache_dm_io_sync_vm(struct cache_c *dmc, struct dm_io_region *where, int rw
 		.mem.offset = 0,
 		.notify.fn = NULL,
 		.client = flashcache_io_client,
-	};
+	};//fn为NULL，说明为同步IO
 
 	error = dm_io(&io_req, 1, where, &error_bits);
 	if (error)

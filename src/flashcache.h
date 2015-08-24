@@ -279,7 +279,7 @@ struct cache_c {
 
 	int 			on_ssd_version;
 	
-	struct cacheblock	*cache;	/* Hash table for cache blocks */
+	struct cacheblock	*cache;	/* Hash table for cache blocks */ //缓存块的哈希表
 	struct cache_set	*cache_sets;
 	struct cache_md_block_head *md_blocks_buf;
 
@@ -291,7 +291,7 @@ struct cache_c {
 	unsigned int 	block_size;	/* Cache block size */
 	unsigned int 	block_shift;	/* Cache block size in bits */
 	unsigned int 	block_mask;	/* Cache block mask */
-	int		md_blocks;		/* Numbers of metadata blocks, including header */
+	int		md_blocks;		/* Numbers of metadata blocks, including header */ //缓存空间的元数据块个数(包含超级块)
 	int     nvram_md_blocks; //新增 nvram缓存的元数据块的个数
 	unsigned int disk_assoc;	/* Disk associativity */
 	unsigned int disk_assoc_shift;	/* Disk associativity in bits */
@@ -407,6 +407,12 @@ struct cache_c {
 	struct sequential_io	seq_recent_ios[SEQUENTIAL_TRACKER_QUEUE_DEPTH];
 	struct sequential_io	*seq_io_head;
 	struct sequential_io 	*seq_io_tail;
+};
+
+//新增  描述缓存设备的数据结构  将flash和nvram的公共属性加入进去
+struct nvcache_device
+{
+	
 };
 
 /* kcached/pending job states */
@@ -596,7 +602,7 @@ struct nvram_cacheblock {
 } __attribute__ ((aligned(16)));
 #endif
 
-#define MD_BLOCK_BYTES(DMC)		((DMC)->md_block_size * 512)//字节为单位
+#define MD_BLOCK_BYTES(DMC)		((DMC)->md_block_size * 512)//元数据块大小，字节表示
 #define MD_SECTORS_PER_BLOCK(DMC)	((DMC)->md_block_size)//缓存的单个元数据块占用空间大小，扇区为单位
 //缓存中每个元数据块包含的缓存块描述结构flash_cacheblock的个数  即一个元数据块能描述几个缓存数据块   nvram中也一样
 #define MD_SLOTS_PER_BLOCK(DMC)		(MD_BLOCK_BYTES(DMC) / (sizeof(struct flash_cacheblock)))
@@ -605,7 +611,7 @@ struct nvram_cacheblock {
 #define INDEX_TO_MD_BLOCK_OFFSET(DMC, INDEX)	((INDEX) % MD_SLOTS_PER_BLOCK(DMC))
 
 #define METADATA_IO_BLOCKSIZE		(256*1024)
-#define METADATA_IO_NUM_BLOCKS(dmc)	(METADATA_IO_BLOCKSIZE / MD_BLOCK_BYTES(dmc))
+#define METADATA_IO_NUM_BLOCKS(dmc)	(METADATA_IO_BLOCKSIZE / MD_BLOCK_BYTES(dmc))//256*1024/8*512=64
 //计算在         +所有元数据块占用的空间大小
 #define INDEX_TO_CACHE_ADDR(DMC, INDEX)	\
 	(((sector_t)(INDEX) << (DMC)->block_shift) + (DMC)->md_blocks * MD_SECTORS_PER_BLOCK((DMC)))
