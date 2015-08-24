@@ -412,7 +412,7 @@ flashcache_writeback_create(struct cache_c *dmc, int force)
 	where.bdev = dmc->cache_dev->bdev;//读取数据的位置为flash设备
 	where.sector = 0;//从设备位置0开始读取  首先读取的数据就是超级块
 	where.count = dmc->md_block_size;//读取的数据大小，一个元数据块的大小
-	error = flashcache_dm_io_sync_vm(dmc, &where, READ, header);//从cache中读取superblock信息到header
+	error = flashcache_dm_io_sync_vm(dmc, &where, READ, header);//从缓存设备中读取superblock信息到header
 	if (error) {
 		vfree((void *)header);
 		DMERR("flashcache_writeback_create: Could not read cache superblock %lu error %d !",
@@ -457,7 +457,7 @@ flashcache_writeback_create(struct cache_c *dmc, int force)
 	       cache_size >> (20-SECTOR_SHIFT), dmc->assoc, dmc->block_size,
 	       dmc->block_size >> (10-SECTOR_SHIFT));
 	//分配在内存中存放元数据的空间，并初始化  默认状态为INVALID，不可用，即缓存块的初始状态
-	//这样的话nvram缓存的元数据怎么和flash的结合到一块？
+	//flash和nvram在内存中各自有自己的元数据结构
 	dmc->cache = (struct cacheblock *)vmalloc(order);
 	if (!dmc->cache) {
 		vfree((void *)header);
@@ -485,7 +485,9 @@ flashcache_writeback_create(struct cache_c *dmc, int force)
 	slots_written = 0;
 	next_ptr = meta_data_cacheblock;
 	j = MD_SLOTS_PER_BLOCK(dmc);
+	//针对缓存空间的每一个存放数据的缓存块初始化其对应的元数据描述结构
 	for (i = 0 ; i < dmc->size ; i++) {
+		//初始化一个flash_cacheblock，然后指向下一个位置
 		next_ptr->dbn = dmc->cache[i].dbn;
 #ifdef FLASHCACHE_DO_CHECKSUMS
 		next_ptr->checksum = dmc->cache[i].checksum;
@@ -501,15 +503,15 @@ flashcache_writeback_create(struct cache_c *dmc, int force)
 			 * Filled the block, write and goto the next metadata block.
 			 */
 			
-			if (slots_written == MD_SLOTS_PER_BLOCK(dmc) * METADATA_IO_NUM_BLOCKS(dmc)) {//数据块个数达到一定限度？
+			if (slots_written == MD_SLOTS_PER_BLOCK(dmc) * METADATA_IO_NUM_BLOCKS(dmc)) {//数据块个数达到8个，一块写入缓存空间
 				/*
 				 * Wrote out an entire metadata IO block, write the block to the ssd.
 				 */
-				where.count = (slots_written / MD_SLOTS_PER_BLOCK(dmc)) * MD_SECTORS_PER_BLOCK(dmc);
+				where.count = (slots_written / MD_SLOTS_PER_BLOCK(dmc)) * MD_SECTORS_PER_BLOCK(dmc);//写入的数据大小，扇区
 				slots_written = 0;
 				sectors_written += where.count;	/* debug */
 				error = flashcache_dm_io_sync_vm(dmc, &where, WRITE, 
-								 meta_data_cacheblock);
+								 meta_data_cacheblock);//将内存中的元数据写入到缓存空间元数据位置   超级块不写入吗？ 在最后写入
 				if (error) {
 					vfree((void *)header);
 					vfree((void *)meta_data_cacheblock);
@@ -520,13 +522,13 @@ flashcache_writeback_create(struct cache_c *dmc, int force)
 				}
 				where.sector += where.count;	/* Advance offset */
 			}
-			/* Move next slot pointer into next metadata block */
+			/* Move next slot pointer into next metadata block */  //移动到下一个数据块位置
 			next_ptr = (struct flash_cacheblock *)
 				((caddr_t)meta_data_cacheblock + ((slots_written / MD_SLOTS_PER_BLOCK(dmc)) * MD_BLOCK_BYTES(dmc)));
-			j = MD_SLOTS_PER_BLOCK(dmc);
+			j = MD_SLOTS_PER_BLOCK(dmc);//再次重置为一个数据块中包含的flash_cacheblock个数
 		}
 	}
-	if (next_ptr != meta_data_cacheblock) {
+	if (next_ptr != meta_data_cacheblock) {//还有数据没有写完
 		/* Write the remaining last blocks out */
 		VERIFY(slots_written > 0);
 		where.count = (slots_written / MD_SLOTS_PER_BLOCK(dmc)) * MD_SECTORS_PER_BLOCK(dmc);
@@ -543,7 +545,7 @@ flashcache_writeback_create(struct cache_c *dmc, int force)
 			return 1;		
 		}
 	}
-	/* Debug Tests */
+	/* Debug Tests */  //还要验证下写入的数据量是否正确
 	sectors_expected = (dmc->size / MD_SLOTS_PER_BLOCK(dmc)) * MD_SECTORS_PER_BLOCK(dmc);
 	if (dmc->size % MD_SLOTS_PER_BLOCK(dmc))
 		sectors_expected += MD_SECTORS_PER_BLOCK(dmc);
@@ -553,15 +555,19 @@ flashcache_writeback_create(struct cache_c *dmc, int force)
 		panic("flashcache_writeback_create: sector mismatch\n");
 	}
 	vfree((void *)meta_data_cacheblock);
-	/* Write the header */
-	header->cache_sb_state = CACHE_MD_STATE_DIRTY;
+	//初始化超级块并写入缓存区
+	/* Write the header */  
+	header->cache_sb_state = CACHE_MD_STATE_DIRTY;//缓存空间上的元数据状态为DIRTY
 	header->block_size = dmc->block_size;
 	header->md_block_size = dmc->md_block_size;
 	header->size = dmc->size;
 	header->assoc = dmc->assoc;
 	header->disk_assoc = dmc->disk_assoc;
 	strncpy(header->disk_devname, dmc->disk_devname, DEV_PATHLEN);
-	strncpy(header->cache_devname, dmc->dm_vdevname, DEV_PATHLEN);
+	#ifdef
+	#else
+	#endif
+	strncpy(header->cache_devname, dmc->dm_vdevname, DEV_PATHLEN);//这个地方为何不初始化cache_devname？ 或者把dm_vdevname
 	header->cache_devsize = to_sector(dmc->cache_dev->bdev->bd_inode->i_size);
 	header->disk_devsize = to_sector(dmc->disk_dev->bdev->bd_inode->i_size);
 	dmc->on_ssd_version = header->cache_version = FLASHCACHE_VERSION;
@@ -878,6 +884,10 @@ flashcache_get_dev(struct dm_target *ti, char *pth, struct dm_dev **dmd,
 int 
 flashcache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 {
+	//新增 hnvcache_c结构 以及cache_c的nvram对象nmc
+	struct hnvcache_c *hmc;
+	struct cache_c *nmc;
+
 	struct cache_c *dmc;
 	sector_t i, order;
 	int r = -EINVAL;
@@ -894,8 +904,46 @@ flashcache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		r = ENOMEM;
 		goto bad;
 	}
+
+	//新增 给hmc和nmc对象分配空间
+	hmc = kzalloc(sizeof(*hmc), GFP_KERNEL);
+	if (hmc == NULL) {
+		ti->error = "flashcache: Failed to allocate hnvcache context";
+		r = ENOMEM;
+		goto bad;
+	}
+	nmc = kzalloc(sizeof(*nmc), GFP_KERNEL);
+	if (nmc == NULL) {
+		ti->error = "flashcache: Failed to allocate nvram  cache context";
+		r = ENOMEM;
+		goto bad;
+	}
+
 //disk=/dev/loop0 ssd=/dev/pmb nvram=/dev/pma cachedev=cache1g8g cachemode=1 2 blocksize=8 cachesize=0 nvramsize=0 assoc=512 diskassoc=266287972864 md_block_size=8
+	//新增 将dm_target赋值给hncache_c
+#ifdef HNVCACHE_V1
+	hmc->tgt = ti;
+#else
 	dmc->tgt = ti;//初始化虚拟设备dm_target
+#endif
+
+	//新增 hnvcache的cache_c属性赋值
+#ifdef HNVCACHE_V1
+	hmc->flash_cache = dmc;
+	hmc->nvram_cache = nmc;
+#endif
+
+	//新增 将原有的获取diskname的方法引入hmc
+#ifdef HNVCACHE_V1
+	if ((r = flashcache_get_dev(ti, argv[0], &hmc->disk_dev, 
+				    hmc->disk_devname, ti->len))) {
+		if (r == -EBUSY)
+			ti->error = "flashcache: Disk device is busy, cannot create cache";
+		else
+			ti->error = "flashcache: Disk device lookup failed";
+		goto bad1;
+	}
+#else
 	if ((r = flashcache_get_dev(ti, argv[0], &dmc->disk_dev, 
 				    dmc->disk_devname, ti->len))) {
 		if (r == -EBUSY)
@@ -904,6 +952,19 @@ flashcache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 			ti->error = "flashcache: Disk device lookup failed";
 		goto bad1;
 	}
+#endif
+
+	//新增 引入hmc
+#ifdef HNVCACHE_V1
+	if ((r = flashcache_get_dev(ti, argv[1], &hmc->cache_dev,
+				    hmc->cache_devname, 0))) {
+		if (r == -EBUSY)
+			ti->error = "flashcache: Cache device is busy, cannot create cache";
+		else
+			ti->error = "flashcache: Cache device lookup failed";
+		goto bad2;
+	}
+#else
 	if ((r = flashcache_get_dev(ti, argv[1], &dmc->cache_dev,
 				    dmc->cache_devname, 0))) {
 		if (r == -EBUSY)
@@ -912,6 +973,19 @@ flashcache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 			ti->error = "flashcache: Cache device lookup failed";
 		goto bad2;
 	}
+#endif
+	//新增 引入hmc
+#ifdef HNVCACHE_V1
+	//新增 初始化nvram_dev设备
+	if ((r = flashcache_get_dev(ti, argv[2], &hmc->nvram_dev,
+				    hmc->nvram_devname, 0))) {
+		if (r == -EBUSY)
+			ti->error = "flashcache: NVRAM Cache device is busy, cannot create cache";
+		else
+			ti->error = "flashcache: NVRAM Cache device lookup failed";
+		goto bad3;
+	}
+#else
 	//新增 初始化nvram_dev设备
 	if ((r = flashcache_get_dev(ti, argv[2], &dmc->nvram_dev,
 				    dmc->nvram_devname, 0))) {
@@ -921,12 +995,32 @@ flashcache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 			ti->error = "flashcache: NVRAM Cache device lookup failed";
 		goto bad3;
 	}
+#endif
+
+	//新增 引入hmc
+#ifdef HNVCACHE_V1
+	//新增  修改了下面所有的bad3为bad4
+	if (sscanf(argv[3], "%s", (char *)&hmc->dm_vdevname) != 1) {
+		ti->error = "flashcache: Virtual device name lookup failed";
+		goto bad4;
+	}
+#else
 	//新增  修改了下面所有的bad3为bad4
 	if (sscanf(argv[3], "%s", (char *)&dmc->dm_vdevname) != 1) {
 		ti->error = "flashcache: Virtual device name lookup failed";
 		goto bad4;
 	}
-	
+#endif
+
+#ifdef HNVCACHE_V1	
+	//新增 初始化nmc  destroyq nr_jobs remove_in_prog这三个属性应该是具体缓存设备需要的
+	r = flashcache_kcached_init(nmc);
+	if (r) {
+		ti->error = "Failed to initialize kcached";
+		goto bad4;
+	}
+#endif
+
 	r = flashcache_kcached_init(dmc);
 	if (r) {
 		ti->error = "Failed to initialize kcached";
@@ -945,7 +1039,11 @@ flashcache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		r = -EINVAL;
 		goto bad4;
 	}
-	
+#ifdef HNVCACHE_V1
+	//新增 nmc的cache_mode默认与dmc相同  WB   WT和WA模式暂时不考虑
+	nmc->cache_mode = dmc->cache_mode;
+#endif
+
 	//处理WB模式
 	/* 
 	 * XXX - Persistence is totally ignored for write through and write around.
@@ -994,6 +1092,13 @@ flashcache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	dmc->block_shift = ffs(dmc->block_size) - 1;//求出移位个数
 	dmc->block_mask = dmc->block_size - 1;//求出掩码的值
 
+#ifdef HNVCACHE_V1
+	//新增 nmc的block_size、block_shift、block_mask默认与dmc相同
+	nmc->block_size = dmc->block_size;
+	nmc->block_shift = dmc->block_shift;
+	nmc->block_mask = dmc->block_mask;
+#endif
+
 	/* dmc->size is specified in sectors here, and converted to blocks later */
 	if (argc >= 8) {//新增 从7改为8 
 		if (sscanf(argv[7], "%lu", &dmc->size) != 1) {
@@ -1024,6 +1129,18 @@ flashcache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	if (!dmc->size)//如果传入的flash缓存空间大小为0，则设置为整个flash设备的大小  转换为sector格式
 		dmc->size = to_sector(dmc->cache_dev->bdev->bd_inode->i_size);
 
+#ifdef HNVCACHE_V1
+	//新增 获取nvram缓存空间大小
+	if (argc >= 9) {//新增 从7改为8 
+		if (sscanf(argv[8], "%lu", &nmc->size) != 1) {
+			ti->error = "flashcache: Invalid nvram cache size";
+			r = -EINVAL;
+			goto bad4;
+		}
+	}
+	if (!nmc->size)
+		nmc->size = to_sector(hmc->nvram_dev->bdev->bd_inode->i_size);
+#else
 	//新增 获取nvram缓存空间大小
 	if (argc >= 9) {//新增 从7改为8 
 		if (sscanf(argv[8], "%lu", &dmc->nvram_size) != 1) {
@@ -1034,6 +1151,8 @@ flashcache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	}
 	if (!dmc->nvram_size)
 		dmc->nvram_size = to_sector(dmc->nvram_dev->bdev->bd_inode->i_size);
+#endif
+
 
 	if (argc >= 10) {//获取缓存分组大小
 		if (sscanf(argv[9], "%u", &dmc->assoc) != 1) {
@@ -1053,6 +1172,12 @@ flashcache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	if (!dmc->assoc)
 		dmc->assoc = DEFAULT_CACHE_ASSOC;//默认的分组大小 512
 	dmc->assoc_shift = ffs(dmc->assoc) - 1;//移位个数
+
+#ifdef HNVCACHE_V1
+	//新增 nmc的分组大小和移位默认与dmc相同，
+	nmc->assoc = dmc->assoc;
+	nmc->assoc_shift = dmc->assoc_shift;
+#endif
 
 	if (argc >= 11) {
 		if (sscanf(argv[10], "%u", &dmc->disk_assoc) != 1) {
@@ -1074,7 +1199,14 @@ flashcache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	}
 	if (dmc->disk_assoc != 0)
 		dmc->disk_assoc_shift = ffs(dmc->disk_assoc) - 1;
-	//WB模式下是有缓存的，所以可以设备元数据大小
+
+#ifdef HNVCACHE_V1
+	//新增 nmc中也要有disk_assoc属性  与dmc相同  毕竟两者的绝大多数属性都是想通的
+	nmc->disk_assoc = dmc->disk_assoc;
+	nmc->disk_assoc_shift = dmc->disk_assoc_shift;
+#endif
+
+	//WB模式下是有缓存的，所以可以设置元数据大小
 	if (dmc->cache_mode == FLASHCACHE_WRITE_BACK) {
 		if (argc >= 12) {
 			if (sscanf(argv[11], "%u", &dmc->md_block_size) != 1) {
@@ -1107,58 +1239,86 @@ flashcache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		}
 	}
 
+#ifdef HNVCACHE_V1
+	//新增 nmc的元数据块大小也与dmc相同
+	nmc->md_block_size = dmc->md_block_size;
+#endif
+
+	//到此为止，所有初始化参数已经接收完毕，开始进行具体的数据操作
+	//前面的接收参数操作暂时不修改，只需要把需要的信息，初始化到hnvcache_c中皆可
+
+
 	//若是缓存模式为WB，且需要创建缓存
 	if (dmc->cache_mode == FLASHCACHE_WRITE_BACK) {	
 		if (persistence == CACHE_CREATE) {
-			if (flashcache_writeback_create(dmc, 0)) {
+			if (flashcache_writeback_create(dmc, 0)) {//为缓存设备创建并初始化超级块和元数据块
 				ti->error = "flashcache: Cache Create Failed";
 				r = -EINVAL;
-				goto bad3;
+				goto bad4;
 			}
 		} else {
 			if (flashcache_writeback_create(dmc, 1)) {
 				ti->error = "flashcache: Cache Force Create Failed";
 				r = -EINVAL;
-				goto bad3;
+				goto bad4;
 			}
 		}
 	} else
 		flashcache_writethrough_create(dmc);
+	//新增 调用flashcache_writeback_create初始化nmc的元数据结构
+#ifdef HNVCACHE_V1
+	if (nmc->cache_mode == FLASHCACHE_WRITE_BACK) {	
+		if (persistence == CACHE_CREATE) {
+			if (flashcache_writeback_create(nmc, 0)) {
+				ti->error = "flashcache: NVRAM Cache Create Failed";
+				r = -EINVAL;
+				goto bad4;
+			}
+		} else {
+			if (flashcache_writeback_create(nmc, 1)) {
+				ti->error = "flashcache: NVRAM Cache Force Create Failed";
+				r = -EINVAL;
+				goto bad4;
+			}
+		}
+	} else
+		flashcache_writethrough_create(nmc);
+#endif
 
 init:
-	dmc->num_sets = dmc->size >> dmc->assoc_shift;
-	order = dmc->num_sets * sizeof(struct cache_set);
-	dmc->cache_sets = (struct cache_set *)vmalloc(order);
+	dmc->num_sets = dmc->size >> dmc->assoc_shift;//分组大小
+	order = dmc->num_sets * sizeof(struct cache_set);//存放分组所需要占用的空间
+	dmc->cache_sets = (struct cache_set *)vmalloc(order);//为分组分配空间，并初始化为0
 	if (!dmc->cache_sets) {
 		ti->error = "Unable to allocate memory";
 		r = -ENOMEM;
 		vfree((void *)dmc->cache);
-		goto bad3;
+		goto bad4;
 	}				
 	memset(dmc->cache_sets, 0, order);
 	for (i = 0 ; i < dmc->num_sets ; i++) {
-		dmc->cache_sets[i].set_fifo_next = i * dmc->assoc;
+		dmc->cache_sets[i].set_fifo_next = i * dmc->assoc;//
 		dmc->cache_sets[i].set_clean_next = i * dmc->assoc;
-		dmc->cache_sets[i].fallow_tstamp = jiffies;
+		dmc->cache_sets[i].fallow_tstamp = jiffies;//jiffies 记录着从电脑开机到现在总共的时钟中断次数
 		dmc->cache_sets[i].fallow_next_cleaning = jiffies;
 		dmc->cache_sets[i].hotlist_lru_tail = FLASHCACHE_NULL;
 		dmc->cache_sets[i].hotlist_lru_head = FLASHCACHE_NULL;
 		dmc->cache_sets[i].warmlist_lru_tail = FLASHCACHE_NULL;
 		dmc->cache_sets[i].warmlist_lru_head = FLASHCACHE_NULL;
-		spin_lock_init(&dmc->cache_sets[i].set_spin_lock);
+		spin_lock_init(&dmc->cache_sets[i].set_spin_lock);//初始化自旋锁
 	}
 	
 	atomic_set(&dmc->hot_list_pct, FLASHCACHE_LRU_HOT_PCT_DEFAULT);
-	flashcache_reclaim_init_lru_lists(dmc);
-	flashcache_hash_init(dmc);
-	if (flashcache_diskclean_init(dmc)) {
+	flashcache_reclaim_init_lru_lists(dmc);//初始化缓存空间数据块到lru的hot和warm列表
+	flashcache_hash_init(dmc);//初始化每个分组的invalid_head和hash_bucket
+	if (flashcache_diskclean_init(dmc)) {//初始化缓存的diskclean空间
 		ti->error = "Unable to allocate memory";
 		r = -ENOMEM;
 		vfree((void *)dmc->cache);
 		vfree((void *)dmc->cache_sets);
-		goto bad3;
+		goto bad4;
 	}		
-
+	//初始化缓存的cache_md_block_head空间
 	if (dmc->cache_mode == FLASHCACHE_WRITE_BACK) {
 		order = (dmc->md_blocks - 1) * sizeof(struct cache_md_block_head);
 		dmc->md_blocks_buf = (struct cache_md_block_head *)vmalloc(order);
@@ -1168,9 +1328,9 @@ init:
 			flashcache_diskclean_destroy(dmc);
 			vfree((void *)dmc->cache);
 			vfree((void *)dmc->cache_sets);
-			goto bad3;
+			goto bad4;
 		}		
-
+		//初始化缓存空间的cache_md_block_head结构  元数据个数   不包括超级块
 		for (i = 0 ; i < dmc->md_blocks - 1 ; i++) {
 			dmc->md_blocks_buf[i].nr_in_prog = 0;
 			dmc->md_blocks_buf[i].queued_updates = NULL;
@@ -1188,18 +1348,25 @@ init:
 	spin_lock_init(&dmc->cache_pending_q_spinlock);
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3,6,0)
-	ti->split_io = dmc->block_size;
+	ti->split_io = dmc->block_size;//指定上层将IO请求划分的单位为dmc的block大小
 #else
 	ti->max_io_len = dmc->block_size;
 #endif
-	ti->private = dmc;
+
+#ifdef HNVCACHE_V1
+	ti->private = hmc;
+#else
+	ti->private = dmc;//告诉上层
+#endif
+
 
 	/* Cleaning Thresholds */
-	dmc->sysctl_dirty_thresh = DIRTY_THRESH_DEF;
-	dmc->dirty_thresh_set = (dmc->assoc * dmc->sysctl_dirty_thresh) / 100;
-	dmc->max_clean_ios_total = MAX_CLEAN_IOS_TOTAL;
-	dmc->max_clean_ios_set = MAX_CLEAN_IOS_SET;
+	dmc->sysctl_dirty_thresh = DIRTY_THRESH_DEF;//脏数据占有的比例  默认20%
+	dmc->dirty_thresh_set = (dmc->assoc * dmc->sysctl_dirty_thresh) / 100;//每个分组中脏数据块的个数阈值
+	dmc->max_clean_ios_total = MAX_CLEAN_IOS_TOTAL;//每个分组同时进行的IO最大个数
+	dmc->max_clean_ios_set = MAX_CLEAN_IOS_SET;//同时进行的IO最大总数
 
+	//初始化系统控制选项  具体含义暂时不管
 	/* Other sysctl defaults */
 	dmc->sysctl_io_latency_hist = 0;
 	dmc->sysctl_do_sync = 0;
@@ -1221,24 +1388,25 @@ init:
 	dmc->sysctl_lru_promote_thresh = 2;
 	dmc->sysctl_new_style_write_merge = 0;
 
+	//初始化顺序数据块记录结构   ？？
 	/* Sequential i/o spotting */	
 	for (i = 0; i < SEQUENTIAL_TRACKER_QUEUE_DEPTH; i++) {
 		dmc->seq_recent_ios[i].most_recent_sector = 0;
 		dmc->seq_recent_ios[i].sequential_count = 0;
 		dmc->seq_recent_ios[i].prev = (struct sequential_io *)NULL;
 		dmc->seq_recent_ios[i].next = (struct sequential_io *)NULL;
-		seq_io_move_to_lruhead(dmc, &dmc->seq_recent_ios[i]);
+		seq_io_move_to_lruhead(dmc, &dmc->seq_recent_ios[i]);//插入到lru列表头部
 	}
 	dmc->seq_io_tail = &dmc->seq_recent_ios[0];
 
 	(void)wait_on_bit_lock(&flashcache_control->synch_flags, FLASHCACHE_UPDATE_LIST,
-			       flashcache_wait_schedule, TASK_UNINTERRUPTIBLE);
-	dmc->next_cache = cache_list_head;
-	cache_list_head = dmc;
-	clear_bit(FLASHCACHE_UPDATE_LIST, &flashcache_control->synch_flags);
-	smp_mb__after_clear_bit();
-	wake_up_bit(&flashcache_control->synch_flags, FLASHCACHE_UPDATE_LIST);
-
+			       flashcache_wait_schedule, TASK_UNINTERRUPTIBLE);//wait for a bit to be cleared, when wanting to set it
+	dmc->next_cache = cache_list_head;//指向为null
+	cache_list_head = dmc;//成为新的head
+	clear_bit(FLASHCACHE_UPDATE_LIST, &flashcache_control->synch_flags);//清除某一位
+	smp_mb__after_clear_bit();//将上面的清除操作在其它处理器上可见
+	wake_up_bit(&flashcache_control->synch_flags, FLASHCACHE_UPDATE_LIST);//唤醒前面的wait_on_bit_lock等待的线程
+	//释放缓存块的hash关系，并将数据块基于不同的状态加入不同的列表
 	for (i = 0 ; i < dmc->size ; i++) {
 		dmc->cache[i].hash_prev = FLASHCACHE_NULL;
 		dmc->cache[i].hash_next = FLASHCACHE_NULL;
@@ -1246,7 +1414,7 @@ init:
 			flashcache_hash_insert(dmc, i);
 			atomic_inc(&dmc->cached_blocks);
 		}
-		if (dmc->cache[i].cache_state & DIRTY) {
+		if (dmc->cache[i].cache_state & DIRTY) {//脏数据块只计数，不加入列表
 			dmc->cache_sets[i / dmc->assoc].nr_dirty++;
 			atomic_inc(&dmc->nr_dirty);
 		}
@@ -1256,9 +1424,9 @@ init:
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
 	INIT_WORK(&dmc->delayed_clean, flashcache_clean_all_sets, dmc);
 #else
-	INIT_DELAYED_WORK(&dmc->delayed_clean, flashcache_clean_all_sets);
+	INIT_DELAYED_WORK(&dmc->delayed_clean, flashcache_clean_all_sets);//将清理缓存块的任务加入到work_struct中  为什么要清理？
 #endif
-
+	//初始化黑白名单
 	dmc->whitelist_head = NULL;
 	dmc->whitelist_tail = NULL;
 	dmc->blacklist_head = NULL;

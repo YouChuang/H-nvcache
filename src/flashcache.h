@@ -122,6 +122,10 @@ MUST DISABLE IRQs.
  * didn't maintain checksums, we could avoid the metadata IO on a re-dirty.
  * Therefore in production we disable block checksums.
  */
+
+//新增 版本控制方法  #ifdef  #endif
+#define HNVCACHE_V1
+
 #if 0
 #define FLASHCACHE_DO_CHECKSUMS
 #endif
@@ -164,7 +168,7 @@ struct cacheblock;
 
 struct cache_set {
 	spinlock_t 		set_spin_lock;
-	u_int32_t		set_fifo_next;
+	u_int32_t		set_fifo_next;//这两个字段什么意思？
 	u_int32_t		set_clean_next;
 	u_int16_t		clean_inprog;
 	u_int16_t		nr_dirty;
@@ -253,7 +257,7 @@ struct diskclean_buf_ {
  * Sequential block history structure - each one
  * records a 'flow' of i/o.
  */
-struct sequential_io {
+struct sequential_io {//顺序块历史结构  不懂~
  	sector_t 		most_recent_sector;
 	unsigned long		sequential_count;
 	/* We use LRU replacement when we need to record a new i/o 'flow' */
@@ -273,6 +277,159 @@ struct sequential_io {
 struct cache_c {
 	struct dm_target	*tgt;
 	
+	struct dm_dev 		*disk_dev;   /* Source device */
+	struct dm_dev 		*cache_dev; /* Cache device */
+	struct dm_dev       *nvram_dev; //新增 nvram的设备
+
+	int 			on_ssd_version;
+	
+	struct cacheblock	*cache;	/* Hash table for cache blocks */ //缓存块的哈希表
+	struct cache_set	*cache_sets;
+	struct cache_md_block_head *md_blocks_buf;
+
+ 	/* None of these change once cache is created */
+	unsigned int 	md_block_size;	/* Metadata block size in sectors */ //缓存空间的单个元数据块大小，扇区为单位
+	sector_t 	size;			/* Cache size */
+	sector_t    nvram_size;    //新增 nvram缓存空间的大小   md_block_size、assoc、block_size/shift/mask、disk相关、
+	unsigned int 	assoc;		/* Cache associativity */
+	unsigned int 	block_size;	/* Cache block size */
+	unsigned int 	block_shift;	/* Cache block size in bits */
+	unsigned int 	block_mask;	/* Cache block mask */
+	int		md_blocks;		/* Numbers of metadata blocks, including header */ //缓存空间的元数据块个数(包含超级块)
+	int     nvram_md_blocks; //新增 nvram缓存的元数据块的个数
+	unsigned int disk_assoc;	/* Disk associativity */
+	unsigned int disk_assoc_shift;	/* Disk associativity in bits */
+	unsigned int assoc_shift;	/* Consecutive blocks size in bits */ //连续块的bit大小？
+	unsigned int num_sets;		/* Number of cache sets */
+	unsigned int nvram_num_sets; //新增 nvram缓存中分组的个数
+	int	cache_mode;
+	int nvram_cache_mode; //新增 nvram缓存的缓存模式
+
+	wait_queue_head_t destroyq;	/* Wait queue for I/O completion */
+	/* XXX - Updates of nr_jobs should happen inside the lock. But doing it outside
+	   is OK since the filesystem is unmounted at this point */
+	atomic_t nr_jobs;		/* Number of I/O jobs */
+
+#define SLOW_REMOVE    1                                                                                    
+#define FAST_REMOVE    2
+	atomic_t remove_in_prog;
+	atomic_t nvram_remove_in_prog;//新增 nvram缓存设备是否在移除
+
+	int	dirty_thresh_set;	/* Per set dirty threshold to start cleaning */ //每个分组中脏数据块的阈值
+	int	max_clean_ios_set;	/* Max cleaning IOs per set */
+	int	max_clean_ios_total;	/* Total max cleaning IOs */
+	int nvram_dirty_thresh_set;//新增 nvram缓存中分组清除脏数据的阈值
+	//正在进行清理、同步索引？、脏数据个数、缓存的数据块个数、等待的job个数等   暂时不新建，需要时加上
+	atomic_t	clean_inprog;
+	atomic_t	sync_index;
+	atomic_t	nr_dirty;
+	atomic_t 	cached_blocks;	/* Number of cached blocks */
+	atomic_t 	pending_jobs_count;
+	int		num_block_hash_buckets;
+
+	/* Stats */
+	struct flashcache_stats flashcache_stats;
+
+	/* Errors */
+	struct flashcache_errors flashcache_errors;
+
+#define IO_LATENCY_GRAN_USECS	250
+#define IO_LATENCY_MAX_US_TRACK	10000	/* 10 ms */
+#define IO_LATENCY_BUCKETS	(IO_LATENCY_MAX_US_TRACK / IO_LATENCY_GRAN_USECS)
+	unsigned long	latency_hist[IO_LATENCY_BUCKETS];
+	unsigned long	latency_hist_10ms;
+	
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
+	struct work_struct delayed_clean;
+#else
+	struct delayed_work delayed_clean;
+#endif
+	//下面这几个跟pid有关，应该是黑白名单控制的，暂时不管
+	spinlock_t ioctl_lock;	/* XXX- RCU! */
+	unsigned long pid_expire_check;
+
+	struct flashcache_cachectl_pid *blacklist_head, *blacklist_tail;
+	struct flashcache_cachectl_pid *whitelist_head, *whitelist_tail;
+	int num_blacklist_pids, num_whitelist_pids;
+	unsigned long blacklist_expire_check, whitelist_expire_check;
+	//lru
+	atomic_t hot_list_pct;
+	int lru_hot_blocks;
+	int lru_warm_blocks;
+
+	spinlock_t	cache_pending_q_spinlock;
+#define PENDING_JOB_HASH_SIZE		32
+	struct pending_job *pending_job_hashbuckets[PENDING_JOB_HASH_SIZE];
+
+	spinlock_t 		diskclean_list_lock;
+	struct diskclean_buf_ 	*diskclean_buf_head;
+	//为什么还要指向下一个？那么cache_c是什么级别的单位？
+	struct cache_c	*next_cache;
+
+	void *sysctl_handle;
+
+	//最后虚拟出来的设备名称，放在超级块中，哪个超级快块？  nvram还是ssd？ 暂时先放在ssd上
+	// DM virtual device name, stored in superblock and restored on load
+	char dm_vdevname[DEV_PATHLEN];
+	// real device names are now stored as UUIDs
+	char nvram_devname[DEV_PATHLEN];//新增 nvram的设备名称
+	char cache_devname[DEV_PATHLEN];
+	char disk_devname[DEV_PATHLEN];
+
+	/* 
+	 * If the SSD returns errors, in WRITETHRU and WRITEAROUND modes, 
+	 * bypass the cache completely. If the SSD dies or is removed, 
+	 * we want to continue sending requests to the device.
+	 */
+	int bypass_cache;
+
+	//系统控制的选项，暂时先不考虑
+	/* Per device sysctls */
+	int sysctl_io_latency_hist;
+	int sysctl_do_sync;
+	int sysctl_stop_sync;
+	int sysctl_dirty_thresh;
+	int sysctl_pid_do_expiry;
+	int sysctl_max_pids;
+	int sysctl_pid_expiry_secs;
+	int sysctl_reclaim_policy;
+	int sysctl_zerostats;
+	int sysctl_error_inject;
+	int sysctl_fast_remove;
+	int sysctl_cache_all;
+	int sysctl_fallow_clean_speed;
+	int sysctl_fallow_delay;
+	int sysctl_skip_seq_thresh_kb;
+	int sysctl_clean_on_read_miss;
+	int sysctl_clean_on_write_miss;
+	int sysctl_lru_hot_pct;
+	int sysctl_lru_promote_thresh;
+	int sysctl_new_style_write_merge;
+
+	//顺序IO探测器
+	/* Sequential I/O spotter */
+	struct sequential_io	seq_recent_ios[SEQUENTIAL_TRACKER_QUEUE_DEPTH];
+	struct sequential_io	*seq_io_head;
+	struct sequential_io 	*seq_io_tail;
+};
+
+//新增  描述缓存设备的数据结构  将flash和nvram的公共属性加入进去
+struct nvcache_device
+{
+	
+};
+
+//新增 hnvcache_c结构 作为整体混合缓存的管理结构 其中cache_c是一个描述单一缓存空间的基本结构
+//在flash单一缓存下，cache_c既描述了缓存，也对flash的属性进行了描述
+struct hnvcache_c
+{
+	//相比cache_c新增表示cache_c对象的结构体    dm_target、三个dm_dev也需要保留，其它暂定
+	struct cache_c flash_cache;
+	struct cache_c nvram_cache;
+	//////
+	/////
+	struct dm_target	*tgt;	
 	struct dm_dev 		*disk_dev;   /* Source device */
 	struct dm_dev 		*cache_dev; /* Cache device */
 	struct dm_dev       *nvram_dev; //新增 nvram的设备
@@ -409,11 +566,6 @@ struct cache_c {
 	struct sequential_io 	*seq_io_tail;
 };
 
-//新增  描述缓存设备的数据结构  将flash和nvram的公共属性加入进去
-struct nvcache_device
-{
-	
-};
 
 /* kcached/pending job states */
 #define READNVRAM   8    //新增nvram的read和write标志
@@ -512,7 +664,7 @@ struct cacheblock {
 	int cache_place;//新增 描述该元数据结构所指示的数据块的缓存位置 0未缓存、1缓存在nvram、2缓存在flash
 	u_int16_t	cache_state;
 	int16_t 	nr_queued;	/* jobs in pending queue */
-	u_int16_t	lru_prev, lru_next;
+	u_int16_t	lru_prev, lru_next;//指向在lru列表中的前后缓存块
 	u_int8_t        use_cnt;//u_int8_t 是平台无关的，在任何平台下，它都代表8位无符号数
 	u_int8_t        lru_state;
 	sector_t 	dbn;	/* Sector number of the cached block */
@@ -610,8 +762,8 @@ struct nvram_cacheblock {
 #define INDEX_TO_MD_BLOCK(DMC, INDEX)	((INDEX) / MD_SLOTS_PER_BLOCK(DMC))
 #define INDEX_TO_MD_BLOCK_OFFSET(DMC, INDEX)	((INDEX) % MD_SLOTS_PER_BLOCK(DMC))
 
-#define METADATA_IO_BLOCKSIZE		(256*1024)
-#define METADATA_IO_NUM_BLOCKS(dmc)	(METADATA_IO_BLOCKSIZE / MD_BLOCK_BYTES(dmc))//256*1024/8*512=64
+#define METADATA_IO_BLOCKSIZE		(256*1024)//单位应该bit位？
+#define METADATA_IO_NUM_BLOCKS(dmc)	(METADATA_IO_BLOCKSIZE / MD_BLOCK_BYTES(dmc))//256*1024/8*512*8=8
 //计算在         +所有元数据块占用的空间大小
 #define INDEX_TO_CACHE_ADDR(DMC, INDEX)	\
 	(((sector_t)(INDEX) << (DMC)->block_shift) + (DMC)->md_blocks * MD_SECTORS_PER_BLOCK((DMC)))

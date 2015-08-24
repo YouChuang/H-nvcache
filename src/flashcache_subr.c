@@ -222,7 +222,8 @@ flashcache_invalid_remove(struct cache_c *dmc, int index)
 	
 }
 
-/* Cache set block hash management */
+//初始化每个缓存分组的invalid列表头部和hash桶
+/* Cache set block hash management */ 
 void
 flashcache_hash_init(struct cache_c *dmc)
 {
@@ -991,7 +992,7 @@ flashcache_dm_io_sync_vm(struct cache_c *dmc,
 	spin_unlock_irq(&flashcache_dm_io_sync_spinlock);
 	return state.error;
 }
-#else//内核版本大于2.6.29
+#else//内核版本大于2.6.29   read 从where中读数据到data，write 将data中的数据写到where
 int
 flashcache_dm_io_sync_vm(struct cache_c *dmc, struct dm_io_region *where, int rw, void *data)
 {
@@ -1033,6 +1034,7 @@ flashcache_update_sync_progress(struct cache_c *dmc)
 
 #define NUM_DISKCLEAN_BLOCKS	32
 
+//初始化缓存的diskclean_buf_空间
 int
 flashcache_diskclean_init(struct cache_c *dmc)
 {

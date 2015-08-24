@@ -940,13 +940,13 @@ flashcache_md_write_done(struct kcached_job *job)
  * logic is in md_write_kickoff), where it switches out the entire pending_jobs
  * list and does all of those updates as 1 ssd write.
  */
-//�������Ѿ�д�ش���  ����Ԫ���ݸ��� �������ݵ�metadata���ڴ�ˢ��ssd  
-//��֤�ڵ��������Ԫ���ݿɴ�ssd�һ�
+//ÔàÊý¾ÝÒÑ¾­Ð´»Ø´ÅÅÌ  ½øÐÐÔªÊý¾Ý¸üÐÂ ½«ÔàÊý¾ÝµÄmetadata´ÓÄÚ´æË¢µ½ssd  
+//±£Ö¤ÔÚµôµçÇé¿öÏÂÔªÊý¾Ý¿É´ÓssdÕÒ»Ø
 void
 flashcache_md_write(struct kcached_job *job)
 {
 	struct cache_c *dmc = job->dmc;
-	//cache_md_block_head��nr_in_prog�ֶο��Ƹ��´��� kcached_job����queue_updates��
+	//cache_md_block_headµÄnr_in_prog×Ö¶Î¿ØÖÆ¸üÐÂ´ÎÐò kcached_job¹ÒÔÚqueue_updatesÉÏ
 	struct cache_md_block_head *md_block_head;
 	unsigned long flags;
 	
@@ -983,7 +983,7 @@ flashcache_md_write(struct kcached_job *job)
 	}
 }
 
-//�ص�����  ���֮ǰ��д���̲����Ƿ�ɹ�  ����һ������
+//»Øµ÷º¯Êý  ¼ì²éÖ®Ç°µÄÐ´´ÅÅÌ²Ù×÷ÊÇ·ñ³É¹¦  ²¢½øÒ»²½´¦Àí
 static void 
 flashcache_kcopyd_callback(int read_err, unsigned int write_err, void *context)
 {
@@ -1002,7 +1002,7 @@ flashcache_kcopyd_callback(int read_err, unsigned int write_err, void *context)
 		read_err = -EIO;
 		dmc->sysctl_error_inject &= ~KCOPYD_CALLBACK_ERROR;
 	}
-	//����Ƿ�д���̳ɹ�  �ɹ���ʼ����Ԫ���ݸ���
+	//¼ì²éÊÇ·ñÐ´´ÅÅÌ³É¹¦  ³É¹¦Ôò¿ªÊ¼½øÐÐÔªÊý¾Ý¸üÐÂ
 	if (likely(read_err == 0 && write_err == 0)) {
 		spin_unlock_irq(&cache_set->set_spin_lock);
 		flashcache_md_write(job);
@@ -1033,7 +1033,7 @@ flashcache_kcopyd_callback(int read_err, unsigned int write_err, void *context)
 	}
 }
 
-//�����ݴ�д����ssdд�ش���
+//ÔàÊý¾Ý´ÓÐ´»º´æssdÐ´»Ø´ÅÅÌ
 static void
 flashcache_dirty_writeback(struct cache_c *dmc, int index)
 {
@@ -1093,7 +1093,7 @@ flashcache_dirty_writeback(struct cache_c *dmc, int index)
 #endif
 			    job);
 #else
-		//kcopyd����ľ�� Դ Ŀ������ Ŀ�ĵ� �����ʶΪ0 �ص�����Ϊ�첽 �ص������Ĳ���
+		//kcopyd·þÎñµÄ¾ä±ú Ô´ Ä¿µÄÊýÁ¿ Ä¿µÄµØ ¶îÍâ±êÊ¶Îª0 »Øµ÷º¯ÊýÎªÒì²½ »Øµ÷º¯ÊýµÄ²ÎÊý
 		dm_kcopyd_copy(flashcache_kcp_client, &job->job_io_regions.cache, 1, &job->job_io_regions.disk, 0, 
 			       (dm_kcopyd_notify_fn) flashcache_kcopyd_callback, 
 			       (void *)job);
@@ -2021,6 +2021,7 @@ flashcache_write(struct cache_c *dmc, struct bio *bio)
 #endif
 #endif
 
+//判断bio请求的数据大小是否超过一个数据块大小以及是否在同一个数据块中
 static void
 flashcache_do_block_checks(struct cache_c *dmc, struct bio *bio)
 {
@@ -2028,12 +2029,12 @@ flashcache_do_block_checks(struct cache_c *dmc, struct bio *bio)
 	sector_t io_start;
 	sector_t io_end;
 
-	VERIFY(to_sector(bio->bi_size) <= dmc->block_size);
+	VERIFY(to_sector(bio->bi_size) <= dmc->block_size);//检查bio请求的数据大小是否小于等于缓存数据块的大小
 	mask = ~((1 << dmc->block_shift) - 1);
-	io_start = bio->bi_sector & mask;
-	io_end = (bio->bi_sector + (to_sector(bio->bi_size) - 1)) & mask;
+	io_start = bio->bi_sector & mask;//bio请求的起始扇区号所在缓存块的起始位置
+	io_end = (bio->bi_sector + (to_sector(bio->bi_size) - 1)) & mask;//bio请求的末尾扇区号所在缓存块的起始位置
 	/* The incoming bio must NOT straddle a blocksize boundary */
-	VERIFY(io_start == io_end);
+	VERIFY(io_start == io_end);//通过请求的起始位置和末尾位置分别得到其所在数据块的起始位置，如果两者相等，说明请求的数据在同一个数据块中
 }
 
 /*
@@ -2047,7 +2048,7 @@ flashcache_map(struct dm_target *ti, struct bio *bio,
 flashcache_map(struct dm_target *ti, struct bio *bio)
 #endif
 {
-	struct cache_c *dmc = (struct cache_c *) ti->private;
+	struct cache_c *dmc = (struct cache_c *) ti->private;//ctr模块中初始化的结构通过dm_target的private属性传递过来
 	int sectors = to_sector(bio->bi_size);
 	int queued;
 	int uncacheable;
@@ -2063,7 +2064,7 @@ flashcache_map(struct dm_target *ti, struct bio *bio)
 	 * Basic check to make sure blocks coming in are as we
 	 * expect them to be.
 	 */
-	flashcache_do_block_checks(dmc, bio);
+	flashcache_do_block_checks(dmc, bio);//检查bio请求的数据大小是否超过一个数据块大小以及是否在同一个数据块中
 
 	if (bio_data_dir(bio) == READ)
 		dmc->flashcache_stats.reads++;

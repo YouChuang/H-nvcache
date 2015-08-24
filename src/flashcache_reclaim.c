@@ -152,6 +152,7 @@ flashcache_reclaim_rebalance_lru(struct cache_c *dmc, int new_lru_hot_pct)
 	atomic_set(&dmc->hot_list_pct, new_lru_hot_pct);
 }
 
+//将缓存空间的数据块分别加入到hot和warm两个列表
 /* For each set, split available blocks into the 2 LRU Queues */
 void
 flashcache_reclaim_init_lru_lists(struct cache_c *dmc)
@@ -167,13 +168,14 @@ flashcache_reclaim_init_lru_lists(struct cache_c *dmc)
 		cache_set = &dmc->cache_sets[set];
 		spin_lock_irq(&cache_set->set_spin_lock);
 		start_index = set * dmc->assoc;
+		//先初始化hot列表，将每个缓存分组的前hot个(个数跟前面设置的hot_list_pct有关，默认50)缓存块插入到hot列表，剩下的插入到warm列表
 		for (j = 0 ; j < hot_blocks_set ; j++) {
 			block_index = start_index + j;
 			cacheblk = &dmc->cache[block_index];
 			cacheblk->lru_prev = FLASHCACHE_NULL;
 			cacheblk->lru_next = FLASHCACHE_NULL;
 			cacheblk->lru_state = LRU_HOT;
-			flashcache_reclaim_add_block_to_list_lru(dmc, block_index);
+			flashcache_reclaim_add_block_to_list_lru(dmc, block_index);//将数据块插入到对应的lru列表中
 		}
 		for ( ; j < dmc->assoc; j++) {
 			block_index = start_index + j;
@@ -299,10 +301,11 @@ flashcache_reclaim_add_block_to_list_mru(struct cache_c *dmc, int index)
 	}
 }
 
-/* Adds a block to the LRU position of its list */
+/* Adds a block to the LRU position of its list */ //index位置的缓存数据块插入到对应的lru列表中
 static void
 flashcache_reclaim_add_block_to_list_lru(struct cache_c *dmc, int index)
 {
+	//基于cache_c和index获得对应的缓存块和分组
 	int set = index / dmc->assoc;
 	int start_index = set * dmc->assoc;
 	int my_index = index - start_index;

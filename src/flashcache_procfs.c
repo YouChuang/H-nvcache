@@ -1148,6 +1148,7 @@ flashcache_cons_procfs_cachename(struct cache_c *dmc, char *path_component)
 	return pathname;
 }
 
+//创建几个proc目录并注册控制器   不太懂
 void 
 flashcache_ctr_procfs(struct cache_c *dmc)
 {
