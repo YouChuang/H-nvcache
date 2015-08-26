@@ -124,7 +124,7 @@ MUST DISABLE IRQs.
  */
 
 //新增 版本控制方法  #ifdef  #endif
-#define HNVCACHE_V1
+//#define HNVCACHE_V1
 
 #if 0
 #define FLASHCACHE_DO_CHECKSUMS
@@ -275,6 +275,9 @@ struct sequential_io {//顺序块历史结构  不懂~
  * Cache context
  */
 struct cache_c {
+	//新增 标志设备类型
+	int device_type;//1为flash 2为nvram
+
 	struct dm_target	*tgt;
 	
 	struct dm_dev 		*disk_dev;   /* Source device */
@@ -425,13 +428,14 @@ struct nvcache_device
 struct hnvcache_c
 {
 	//相比cache_c新增表示cache_c对象的结构体    dm_target、三个dm_dev也需要保留，其它暂定
-	struct cache_c flash_cache;
-	struct cache_c nvram_cache;
+	struct cache_c *flash_cache;
+	struct cache_c *nvram_cache;
 	//////
 	/////
 	struct dm_target	*tgt;	
 	struct dm_dev 		*disk_dev;   /* Source device */
 	struct dm_dev 		*cache_dev; /* Cache device */
+	struct dm_dev       *flash_dev; //新增 在hmc中将flash和nvram视为两个不同的dm_dev设备，取代上面的cache_dev，下面的devname也要这样
 	struct dm_dev       *nvram_dev; //新增 nvram的设备
 
 	int 			on_ssd_version;
@@ -528,6 +532,7 @@ struct hnvcache_c
 	// real device names are now stored as UUIDs
 	char nvram_devname[DEV_PATHLEN];//新增 nvram的设备名称
 	char cache_devname[DEV_PATHLEN];
+	char flash_devname[DEV_PATHLEN];//新增 同上面的dev
 	char disk_devname[DEV_PATHLEN];
 
 	/* 
@@ -680,6 +685,8 @@ struct flash_superblock {
 	u_int32_t block_size;	/* Cache block size */
 	u_int32_t assoc;	/* Cache associativity */
 	u_int32_t cache_sb_state;	/* Clean shutdown ? */
+	//新增 临时存放真正的cache_devname
+	char cache_devname_back[DEV_PATHLEN]; 
 	char cache_devname[DEV_PATHLEN]; /* Contains dm_vdev name as of v2 modifications */
 	sector_t cache_devsize;
 	char disk_devname[DEV_PATHLEN]; /* underlying block device name (use UUID paths!) */

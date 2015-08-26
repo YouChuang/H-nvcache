@@ -2048,7 +2048,14 @@ flashcache_map(struct dm_target *ti, struct bio *bio,
 flashcache_map(struct dm_target *ti, struct bio *bio)
 #endif
 {
+
+#ifdef HNVCACHE_V1
+	struct hnvcache_c *hmc = (struct hnvcache_c *) ti->private;
+	struct cache_c *dmc = hmc->flash_cache;
+	struct cache_c *nmc = hmc->nvram_cache;
+#else
 	struct cache_c *dmc = (struct cache_c *) ti->private;//ctr模块中初始化的结构通过dm_target的private属性传递过来
+#endif
 	int sectors = to_sector(bio->bi_size);
 	int queued;
 	int uncacheable;

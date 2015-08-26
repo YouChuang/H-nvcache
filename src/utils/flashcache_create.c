@@ -46,7 +46,7 @@
 void
 usage(char *pname)
 {
-	fprintf(stderr, "Usage: %s [-v] [-p back|thru|around] [-b block size] [-m md block size] [-s cache size] [-a associativity] cachedev ssd_devname disk_devname\n", pname);
+	fprintf(stderr, "Usage: %s [-v] [-p back|thru|around] [-b block size] [-m md block size] [-s cache size] [-a associativity] cachedev flash_devname disk_devname\n", pname);
 	fprintf(stderr, "Usage : %s Cache Mode back|thru|around is required argument\n",
 		pname);
 	fprintf(stderr, "Usage : %s Default units for -b, -m, -s are sectors, or specify in k/M/G. Default associativity is 512.\n",
@@ -196,14 +196,14 @@ int
 main(int argc, char **argv)
 {
 	int nvram_fd, cache_fd, disk_fd, c;//新增 nvram_fd
-	char *disk_devname, *ssd_devname, *nvram_devname, *cachedev;//新增 nvram_devname表示nvram缓存路径名字
+	char *disk_devname, *flash_devname, *nvram_devname, *cachedev;//新增 nvram_devname表示nvram缓存路径名字
 	struct flash_superblock *sb = (struct flash_superblock *)buf;//flash超级块的对象sb指向buf空间
-	struct nvram_superblock *nb = (struct nvram_superblock *)nvram_buf;//新增 nb结构体
-	sector_t nvram_cache_devsize, cache_devsize, disk_devsize;//新增 nvram_cache_devsize
-	sector_t block_size = 0, md_block_size = 0, cache_size = 0, nvram_cache_size = 0;//新增 nvram_cache_size
+	struct flash_superblock *nsb = (struct flash_superblock *)nvram_buf;//新增 nb结构体
+	sector_t nvram_devsize, cache_devsize, disk_devsize;//新增 nvram_cache_devsize
+	sector_t block_size = 0, md_block_size = 0, cache_size = 0, nvram_size = 0;//新增 nvram_size
 	sector_t ram_needed;//typedef unsigned long sector_t;
 	struct sysinfo i;
-	int cache_sectorsize, nvram_cache_sectorsize;//新增 nvram的扇区大小
+	int cache_sectorsize, nvram_sectorsize;//新增 nvram的扇区大小
 	int associativity = 512;
 	int disk_associativity = 512;
 	int ret;
@@ -212,11 +212,11 @@ main(int argc, char **argv)
 	
 	pname = argv[0];
 	//flashcache_create -p back flashcache /dev/pma /dev/pmb /dev/loop0
-	//flashcache_create [-v] -p back|around|thru [-s cache size] [-b block size] cachedevname ssd_devname disk_devname
+	//flashcache_create [-v] -p back|around|thru [-s cache size] [-b block size] cachedevname flash_devname disk_devname
 	while ((c = getopt(argc, argv, "fs:b:d:m:va:p:")) != -1) {
 		switch (c) {
 		case 's':
-			//这个位置以后还可以初始化nvram_cache_size属性
+			//这个位置以后还可以初始化nvram_size属性
 			cache_size = get_cache_size(optarg);//s选项后面跟着的是缓存大小 默认大小，不然就要分别指定两个缓存的大小
 			break;
 		case 'a':
@@ -273,13 +273,13 @@ main(int argc, char **argv)
 	nvram_devname = argv[optind++];
 	if (optind == argc)
 		usage(pname);
-	ssd_devname = argv[optind++];
+	flash_devname = argv[optind++];
 	if (optind == argc)
 		usage(pname);
 	disk_devname = argv[optind];
 	//新增 对nvram路径名/磁盘分组大小的输出 
-	printf("cachedev %s, nvram_devname %s, ssd_devname %s, disk_devname %s cache_mode %s disk_associativity %lu\n", 
-	       cachedev, nvram_devname, ssd_devname, disk_devname, cache_mode_str, disk_associativity);
+	printf("cachedev %s, nvram_devname %s, flash_devname %s, disk_devname %s cache_mode %s disk_associativity %lu\n", 
+	       cachedev, nvram_devname, flash_devname, disk_devname, cache_mode_str, disk_associativity);
 	if (cache_mode == FLASHCACHE_WRITE_BACK)
 		printf("block_size %lu, md_block_size %lu, cache_size %lu\n", 
 		       block_size, md_block_size, cache_size);
@@ -299,11 +299,11 @@ main(int argc, char **argv)
 			nvram_devname);
 		exit(1);		
 	}
-	if (nb->cache_sb_state == CACHE_MD_STATE_DIRTY ||
-	    nb->cache_sb_state == CACHE_MD_STATE_CLEAN ||
-	    nb->cache_sb_state == CACHE_MD_STATE_FASTCLEAN ||
-	    nb->cache_sb_state == CACHE_MD_STATE_UNSTABLE) {
-		fprintf(stderr, "%s: Valid NVRAM already exists on %s\n", 
+	if (nsb->cache_sb_state == CACHE_MD_STATE_DIRTY ||
+	    nsb->cache_sb_state == CACHE_MD_STATE_CLEAN ||
+	    nsb->cache_sb_state == CACHE_MD_STATE_FASTCLEAN ||
+	    nsb->cache_sb_state == CACHE_MD_STATE_UNSTABLE) {
+		fprintf(stderr, "%s: Valid Flashcache already exists on %s\n", 
 			pname, nvram_devname);
 		fprintf(stderr, "%s: Use flashcache_destroy first and then create again %s\n", 
 			pname, nvram_devname);
@@ -312,15 +312,15 @@ main(int argc, char **argv)
 
 	//读取flash缓存空间的超级块中的数据
 	//指向文件的头部，并从头部开始读取512个字节的数据到buf中  那就应该是超级块只占用一个扇区大小？
-	cache_fd = open(ssd_devname, O_RDONLY);
+	cache_fd = open(flash_devname, O_RDONLY);
 	if (cache_fd < 0) {
-		fprintf(stderr, "Failed to open %s\n", ssd_devname);
+		fprintf(stderr, "Failed to open %s\n", flash_devname);
 		exit(1);
 	}
     lseek(cache_fd, 0, SEEK_SET);
 	if (read(cache_fd, buf, 512) < 0) {
-		fprintf(stderr, "Cannot read Flashcache superblock %s\n", 
-			ssd_devname);
+		fprintf(stderr, "Cannot read Flash superblock %s\n", 
+			flash_devname);
 		exit(1);		
 	}
 	//通过flash缓存超级块的clean或者shutdown状态来判断是否已经有缓存数据在flash中
@@ -329,9 +329,9 @@ main(int argc, char **argv)
 	    sb->cache_sb_state == CACHE_MD_STATE_FASTCLEAN ||
 	    sb->cache_sb_state == CACHE_MD_STATE_UNSTABLE) {
 		fprintf(stderr, "%s: Valid Flashcache already exists on %s\n", 
-			pname, ssd_devname);
+			pname, flash_devname);
 		fprintf(stderr, "%s: Use flashcache_destroy first and then create again %s\n", 
-			pname, ssd_devname);
+			pname, flash_devname);
 		exit(1);
 	}
 	//
@@ -342,35 +342,35 @@ main(int argc, char **argv)
 		exit(1);
 	}
 
-	//新增 获取nvram设备空间大小和物理扇区大小
+	//新增 获取nvram设备空间大小BLKGETSIZE和物理扇区大小BLKSSZGET
 	//并判断nvram缓存数据块大小是否大于nvram物理扇区大小和nvram缓存空间大小是否小于nvram设备大小
-	//不过默认cache_size应该为0，所以nvram_cache_size也默认为0
-	if (ioctl(nvram_fd, BLKGETSIZE, &nvram_cache_devsize) < 0) {
-		fprintf(stderr, "%s: Cannot get nvram cache size %s\n", 
+	//不过默认cache_size应该为0，所以nvram_size也默认为0
+	if (ioctl(nvram_fd, BLKGETSIZE, &nvram_devsize) < 0) {
+		fprintf(stderr, "%s: Cannot get nvram size %s\n", 
 		pname, nvram_devname);
-	exit(1);		
+		exit(1);		
 	}
-	if (ioctl(nvram_fd, BLKSSZGET, &nvram_cache_sectorsize) < 0) {
-		fprintf(stderr, "%s: Cannot get nvram cache size %s\n", 
+	if (ioctl(nvram_fd, BLKSSZGET, &nvram_sectorsize) < 0) {
+		fprintf(stderr, "%s: Cannot get nvram size %s\n", 
 			pname, nvram_devname);
 		exit(1);		
 	}
 	if (md_block_size > 0 &&
-	    md_block_size * 512 < nvram_cache_sectorsize) {
+	    md_block_size * 512 < nvram_sectorsize) {
 		fprintf(stderr, "%s: NVRAM device (%s) sector size (%d) cannot be larger than metadata block size (%d) !\n",
-		        pname, nvram_devname, nvram_cache_sectorsize, md_block_size * 512);
+		        pname, nvram_devname, nvram_sectorsize, md_block_size * 512);
 		exit(1);				
 	}
-	if (nvram_cache_size && nvram_cache_size > nvram_cache_devsize) {
+	if (nvram_size && nvram_size > nvram_devsize) {
 		fprintf(stderr, "%s: Cache size is larger than nvram size %lu/%lu\n", 
-			pname, nvram_cache_size, nvram_cache_devsize);
+			pname, nvram_size, nvram_devsize);
 		exit(1);		
 	}
 
 	//获取flash设备的空间大小并写入到cache_devsize中
 	if (ioctl(cache_fd, BLKGETSIZE, &cache_devsize) < 0) {
 		fprintf(stderr, "%s: Cannot get cache size %s\n", 
-			pname, ssd_devname);
+			pname, flash_devname);
 		exit(1);		
 	}
 	if (ioctl(disk_fd, BLKGETSIZE, &disk_devsize) < 0) {
@@ -382,14 +382,14 @@ main(int argc, char **argv)
 	//获取flash设备的物理扇区大小
 	if (ioctl(cache_fd, BLKSSZGET, &cache_sectorsize) < 0) {
 		fprintf(stderr, "%s: Cannot get cache size %s\n", 
-			pname, ssd_devname);
+			pname, flash_devname);
 		exit(1);		
 	}
 	//flash设备的物理扇区大小不能大于元数据块的大小   不然元数据块就成了管理flash的最小数据单元了
 	if (md_block_size > 0 &&
 	    md_block_size * 512 < cache_sectorsize) {
 		fprintf(stderr, "%s: SSD device (%s) sector size (%d) cannot be larger than metadata block size (%d) !\n",
-		        pname, ssd_devname, cache_sectorsize, md_block_size * 512);
+		        pname, flash_devname, cache_sectorsize, md_block_size * 512);
 		exit(1);				
 	}
 	//缓存空间大小不能大于flash设备空间大小
@@ -399,15 +399,18 @@ main(int argc, char **argv)
 		exit(1);		
 	}
 
+	//新增 输出已获取到的设备信息
+	printf("flash:%s缓存大小为%d，设备大小为%d nvram:%s缓存大小为%d，设备大小为%d disk:%s设备大小为%d\n", flash_devname, cache_size, cache_devsize, nvram_devname, nvram_size, nvram_devsize, disk_devname, disk_devsize);
+
 	/* Remind users how much core memory it will take - not always insignificant.
  	 * If it's > 25% of RAM, warn.
          */
  	//如果缓存空间大小没有在参数中赋值，为0，则为设备大小/块大小 *缓存块大小，即整个设备 
- 	//新增 nvram_cache_size为0，ram_needed加上nvram设备大小
-	if (cache_size == 0 || nvram_cache_size == 0)
-		ram_needed = (cache_devsize / block_size) * sizeof(struct cacheblock) + (nvram_cache_devsize / block_size) * sizeof(struct cacheblock);	/* Whole device */
+ 	//新增 nvram_size为0，ram_needed加上nvram设备大小
+	if (cache_size == 0 || nvram_size == 0)
+		ram_needed = (cache_devsize / block_size) * sizeof(struct cacheblock) + (nvram_devsize / block_size) * sizeof(struct cacheblock);	/* Whole device */
 	else
-		ram_needed = (cache_size / block_size) * sizeof(struct cacheblock) + (nvram_cache_size / block_size) * sizeof(struct cacheblock);
+		ram_needed = (cache_size / block_size) * sizeof(struct cacheblock) + (nvram_size / block_size) * sizeof(struct cacheblock);
 
 	sysinfo(&i);
 	printf("Flashcache metadata will use %luMB of your %luMB main memory\n",
@@ -428,23 +431,22 @@ main(int argc, char **argv)
 	}
 	printf("再输出一次disk_associativity=%lu associativity=%lu\n", disk_associativity, associativity);
 	//缓存大小也不能大于磁盘大小   
-	//新增 加入nvram_cache_size > disk_devsize
-	if (!force && (cache_size > disk_devsize || nvram_cache_size > disk_devsize)) {
+	//新增 加入nvram_size > disk_devsize
+	if (!force && (cache_size > disk_devsize || nvram_size > disk_devsize)) {
 		fprintf(stderr, "Size of cache volume (%s) || (%s) is larger than disk volume (%s)\n",
-			nvram_devname, ssd_devname, disk_devname);
+			nvram_devname, flash_devname, disk_devname);
 		check_sure();
 	}
 	//新增  先提前输出一遍命令内容  共享cache_mode、block_size、assoc、md_block_size   persistence默认为2，即create
-	printf("echo 0 %lu flashcache disk=%s ssd=%s nvram=%s cachedev=%s cachemode=%d 2 blocksize=%lu cachesize=%lu nvramsize=%lu assoc=%d diskassoc=%lu md_block_size=%lu"
+	printf("echo 0 %lu flashcache disk=%s ssd=%s nvram=%s cachedev=%s cachemode=%d 2 blocksize=%lu cachesize=%lu nvramsize=%lu assoc=%d diskassoc=%d md_block_size=%lu"
 		" | dmsetup create %s.\n",
-		disk_devsize, disk_devname, ssd_devname, nvram_devname, cachedev, cache_mode, block_size, 
-		cache_size, nvram_cache_size, associativity, disk_associativity, md_block_size,
+		disk_devsize, disk_devname, flash_devname, nvram_devname, cachedev, cache_mode, block_size, 
+		cache_size, nvram_size, associativity, disk_associativity, md_block_size,
 		cachedev);
-	printf("最后输出一次disk_associativity=%lu associativity=%lu\n", disk_associativity, associativity);
 
 	/*
 [root@localhost flashcache-3.1.3]# flashcache_create -p back cache1g8g /dev/pma /dev/pmb /dev/loop0
-cachedev cache1g8g, nvram_devname /dev/pma, ssd_devname /dev/pmb, disk_devname /dev/loop0 cache mode WRITE_BACK
+cachedev cache1g8g, nvram_devname /dev/pma, flash_devname /dev/pmb, disk_devname /dev/loop0 cache mode WRITE_BACK
 block_size 8, md_block_size 8, cache_size 0
 Flashcache metadata will use 58MB of your 64426MB main memory
 echo 0 20971520 flashcache disk=/dev/loop0 ssd=/dev/pmb nvram=/dev/pma cachedev=cache1g8g cachemode=1 2 blocksize=8 
@@ -452,12 +454,12 @@ cachesize=0 nvramsize=0 assoc=512 diskassoc=266287972864 md_block_size=8 | dmset
 	*/
 
 	//设计创建设备的命令  先不加入nvram，不然后面需要加上解析参数的部分才能正常运行
-	sprintf(dmsetup_cmd, "echo 0 %lu flashcache %s %s %s %d 2 %lu %lu %d %lu %lu"
+	sprintf(dmsetup_cmd, "echo 0 %lu flashcache %s %s %s %s %d 2 %lu %lu %lu %d %lu %lu"
 		" | dmsetup create %s",
-		disk_devsize, disk_devname, ssd_devname, cachedev, cache_mode, block_size, 
-		cache_size, associativity, disk_associativity, md_block_size,
+		disk_devsize, disk_devname, flash_devname, nvram_devname, cachedev, cache_mode, block_size, 
+		cache_size, nvram_size, associativity, disk_associativity, md_block_size,
 		cachedev);
-
+	printf("dmsetup_cmd:%s", dmsetup_cmd);
 	/* Go ahead and create the cache.
 	 * XXX - Should use the device mapper library for this.
 	 */

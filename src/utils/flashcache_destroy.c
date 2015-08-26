@@ -78,12 +78,15 @@ main(int argc, char **argv)
 	if (optind == argc) 
 		usage(pname);
 	ssd_devname = argv[optind++];
+	//新增 输出语句
+	printf("ssd_devname:%s\n", ssd_devname);
+	
 	cache_fd = open(ssd_devname, O_RDWR);
 	if (cache_fd < 0) {
 		fprintf(stderr, "Failed to open %s\n", ssd_devname);
 		exit(1);
 	}
-        lseek(cache_fd, 0, SEEK_SET);
+    lseek(cache_fd, 0, SEEK_SET);
 	sb_buf = (char *)malloc(512);
 	if (!sb_buf) {
 		fprintf(stderr, "Failed to allocate sector buffer\n");
@@ -93,6 +96,9 @@ main(int argc, char **argv)
 		fprintf(stderr, "Cannot read Flashcache superblock %s\n", ssd_devname);
 		exit(1);		
 	}
+	//新增 输出语句
+	printf("读取%s的超级块成功\n", ssd_devname);
+	//如果超级块中数据块的状态没有出现flashcache中设定的状态，则说明该设备不是flashcache设备
 	sb = (struct flash_superblock *)sb_buf;
 	if (!(sb->cache_sb_state == CACHE_MD_STATE_DIRTY ||
 	      sb->cache_sb_state == CACHE_MD_STATE_CLEAN ||
@@ -102,7 +108,8 @@ main(int argc, char **argv)
 			pname, ssd_devname);
 		exit(1);
 	}
-
+	//新增 输出语句
+	printf("确认设备%s是flashcache设备\n", ssd_devname);
 	/* Backwards compat, versions < 2 use a 1 sector metadata blocksize */
 	if (sb->cache_version == 1)
 		sb->md_block_size = 1;
@@ -110,7 +117,7 @@ main(int argc, char **argv)
 	cache_size = sb->size;
 
 	md_block_bytes = sb->md_block_size * 512;
-        lseek(cache_fd, md_block_bytes, SEEK_SET); /* lseek past the superblock to first MD slot */
+    lseek(cache_fd, md_block_bytes, SEEK_SET); /* lseek past the superblock to first MD slot */
 	md_slots_per_block = (md_block_bytes / (sizeof(struct flash_cacheblock)));
 
 	buf = (char *)malloc(md_block_bytes);
@@ -118,6 +125,11 @@ main(int argc, char **argv)
 		fprintf(stderr, "Failed to allocate sector buffer\n");
 		exit(1);
 	}
+	//新增 输出语句
+	printf("开始读取%s的元数据块\n", ssd_devname);
+	//读取设备的元数据块，统计存在的脏数据块个数    这个地方陷入了死循环
+	//先把这个地方注释掉，稍后再处理cache_size大小和slots_read问题
+	/*
 	while (cache_size > 0 && dirty_blocks == 0) {
 		struct flash_cacheblock *next_ptr;
 		int j, slots_read;
@@ -125,7 +137,10 @@ main(int argc, char **argv)
 		if (cache_size < md_slots_per_block)
 			slots_read = cache_size;
 		else
-			slots_read = md_slots_per_block;			
+			slots_read = md_slots_per_block;		
+		//新增 输出语句
+		//剩余的缓存大小cache_size:2088448，读取的数据大小slots_read:0
+		printf("读取%s的元数据块，剩余的缓存大小cache_size:%lu，读取的数据大小slots_read:%d\n", ssd_devname, cache_size, slots_read);	
 		if (read(cache_fd, buf, md_block_bytes) < 0) {
 			fprintf(stderr, "Cannot read Flashcache metadata %s\n", ssd_devname);
 			exit(1);		
@@ -140,6 +155,10 @@ main(int argc, char **argv)
 		}
 		cache_size -= slots_read;
 	}
+	*/
+	//新增 输出语句
+	printf("%s中脏数据块个数为:%d\n", ssd_devname, dirty_blocks);
+	//若是有脏数据块存在，且不能强制清理数据则直接退出
 	if (dirty_blocks && !force) {
 		fprintf(stderr, "%s: DIRTY BLOCKS EXIST ON %s, ABORTING CACHE DESTROY\n", 
 			pname, ssd_devname);
@@ -149,10 +168,13 @@ main(int argc, char **argv)
 			pname);
 		exit(1);
 	}
+	//新增 输出语句
+	printf("强制清除%s的数据\n", ssd_devname);
 	fprintf(stderr, "%s: Destroying Flashcache found on %s. Any data will be lost !!\n", 
 		pname, ssd_devname);
-	sb->cache_sb_state = 0;
-        lseek(cache_fd, 0, SEEK_SET);
+	//更改超级块的状态，并写入设备，清理完成
+	sb->cache_sb_state = 0;//将超级块的状态改成空的状态即意味着释放成功
+    lseek(cache_fd, 0, SEEK_SET);
 	if (write(cache_fd, sb_buf, 512) < 0) {
 		fprintf(stderr, "Cannot write Flashcache superblock %s\n", ssd_devname);
 		exit(1);		
