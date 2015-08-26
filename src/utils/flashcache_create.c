@@ -281,7 +281,7 @@ main(int argc, char **argv)
 	printf("cachedev %s, nvram_devname %s, flash_devname %s, disk_devname %s cache_mode %s disk_associativity %lu\n", 
 	       cachedev, nvram_devname, flash_devname, disk_devname, cache_mode_str, disk_associativity);
 	if (cache_mode == FLASHCACHE_WRITE_BACK)
-		printf("block_size %lu, md_block_size %lu, cache_size %lu\n", 
+		printf("FLASHCACHE_WRITE_BACK:block_size %lu, md_block_size %lu, cache_size %lu\n", 
 		       block_size, md_block_size, cache_size);
 	else
 		printf("block_size %lu, cache_size %lu\n", 
@@ -421,7 +421,7 @@ main(int argc, char **argv)
 		fprintf(stderr, "You can reduce this with a smaller cache or a larger blocksize.\n");
 		check_sure();
 	}
-	printf("输出一次disk_associativity=%lu associativity=%lu\n", disk_associativity, associativity);
+	//printf("输出一次disk_associativity=%lu associativity=%lu\n", disk_associativity, associativity);
 	//磁盘分组大小不能大于缓存分组大小
 	if (disk_associativity == 0 ||
 	    disk_associativity > associativity) {
@@ -429,7 +429,7 @@ main(int argc, char **argv)
 			pname, disk_associativity);
 		exit(1);
 	}
-	printf("再输出一次disk_associativity=%lu associativity=%lu\n", disk_associativity, associativity);
+	//printf("再输出一次disk_associativity=%lu associativity=%lu\n", disk_associativity, associativity);
 	//缓存大小也不能大于磁盘大小   
 	//新增 加入nvram_size > disk_devsize
 	if (!force && (cache_size > disk_devsize || nvram_size > disk_devsize)) {
@@ -449,8 +449,19 @@ main(int argc, char **argv)
 cachedev cache1g8g, nvram_devname /dev/pma, flash_devname /dev/pmb, disk_devname /dev/loop0 cache mode WRITE_BACK
 block_size 8, md_block_size 8, cache_size 0
 Flashcache metadata will use 58MB of your 64426MB main memory
-echo 0 20971520 flashcache disk=/dev/loop0 ssd=/dev/pmb nvram=/dev/pma cachedev=cache1g8g cachemode=1 2 blocksize=8 
-cachesize=0 nvramsize=0 assoc=512 diskassoc=266287972864 md_block_size=8 | dmsetup create cache1g8g
+echo 0 20971520 flashcache /dev/loop0 /dev/pmb /dev/pma cache1g8g 1 2 8 0 0 512 266287972864 8 | dmsetup create cache1g8g
+echo 0 20971520 flashcache /dev/loop0 /dev/pmb cachehaha 1 2 8 0 512 140733193388544 8 | dmsetup create cachehaha
+	*/
+	/*
+dmsetup remove cachecache
+rmmod flashcache
+flashcache_destroy /dev/pma
+
+make KERNEL_TREE=/usr/src/kernels/2.6.32-504.12.2.el6.x86_64/ && make install
+modprobe flashcache
+flashcache_create -p back cachecache /dev/pma /dev/loop0
+
+
 	*/
 
 	//设计创建设备的命令  先不加入nvram，不然后面需要加上解析参数的部分才能正常运行
@@ -459,16 +470,15 @@ cachesize=0 nvramsize=0 assoc=512 diskassoc=266287972864 md_block_size=8 | dmset
 		disk_devsize, disk_devname, flash_devname, nvram_devname, cachedev, cache_mode, block_size, 
 		cache_size, nvram_size, associativity, disk_associativity, md_block_size,
 		cachedev);
-	printf("dmsetup_cmd:%s", dmsetup_cmd);
+	printf("dmsetup_cmd:%s\n", dmsetup_cmd);
 	/* Go ahead and create the cache.
 	 * XXX - Should use the device mapper library for this.
 	 */
-	//加载flashcache模块
-	load_module();
+	
+	load_module();//加载flashcache模块
 	if (verbose)
 		fprintf(stderr, "Creating FlashCache Volume : \"%s\"\n", dmsetup_cmd);
-	//执行命令  创建设备     暂时先不创建混合设备
-	ret = system(dmsetup_cmd);
+	ret = system(dmsetup_cmd);//执行命令  创建设备
 	if (ret) {
 		fprintf(stderr, "%s failed\n", dmsetup_cmd);
 		exit(1);

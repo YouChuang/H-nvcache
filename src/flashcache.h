@@ -687,6 +687,7 @@ struct flash_superblock {
 	u_int32_t cache_sb_state;	/* Clean shutdown ? */
 	//新增 临时存放真正的cache_devname
 	char cache_devname_back[DEV_PATHLEN]; 
+	
 	char cache_devname[DEV_PATHLEN]; /* Contains dm_vdev name as of v2 modifications */
 	sector_t cache_devsize;
 	char disk_devname[DEV_PATHLEN]; /* underlying block device name (use UUID paths!) */

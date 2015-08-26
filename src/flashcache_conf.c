@@ -903,11 +903,11 @@ flashcache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
 	dmc = kzalloc(sizeof(*dmc), GFP_KERNEL);
 	if (dmc == NULL) {
-		ti->error = "flashcache: Failed to allocate cache context";
+		ti->error = "flashcache: Failed to allocate flash context";
 		r = ENOMEM;
 		goto bad;
 	}
-
+#ifdef HNVCACHE_V1
 	//新增 给hmc和nmc对象分配空间
 	hmc = kzalloc(sizeof(*hmc), GFP_KERNEL);
 	if (hmc == NULL) {
@@ -921,14 +921,14 @@ flashcache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		r = ENOMEM;
 		goto bad;
 	}
+#endif
 
-//disk=/dev/loop0 ssd=/dev/pmb nvram=/dev/pma cachedev=cache1g8g cachemode=1 2 blocksize=8 cachesize=0 nvramsize=0 assoc=512 diskassoc=266287972864 md_block_size=8
+//echo 0 20971520 flashcache /dev/loop0 /dev/pmb /dev/pma cache1g8g 1 2 8 0 0 512 266287972864 8 | dmsetup create cache1g8g
 	//新增 将dm_target赋值给hncache_c
 #ifdef HNVCACHE_V1
 	hmc->tgt = ti;
 #endif
 	dmc->tgt = ti;//初始化虚拟设备dm_target
-
 
 	//新增 hnvcache的cache_c属性赋值
 #ifdef HNVCACHE_V1
@@ -1158,18 +1158,6 @@ flashcache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		nmc->size = to_sector(nmc->cache_dev->bdev->bd_inode->i_size);
 #endif
 
-	//新增 获取nvram缓存空间大小    删除
-	if (argc >= 9) {//新增 从7改为8 
-		if (sscanf(argv[8], "%lu", &dmc->nvram_size) != 1) {
-			ti->error = "flashcache: Invalid nvram cache size";
-			r = -EINVAL;
-			goto bad4;
-		}
-	}
-	if (!dmc->nvram_size)
-		dmc->nvram_size = to_sector(dmc->nvram_dev->bdev->bd_inode->i_size);
-
-
 	if (argc >= 10) {//获取缓存分组大小
 		if (sscanf(argv[9], "%u", &dmc->assoc) != 1) {
 			ti->error = "flashcache: Invalid cache associativity";
@@ -1281,6 +1269,7 @@ flashcache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		}
 	} else
 		flashcache_writethrough_create(dmc);
+		
 	//新增 调用flashcache_writeback_create初始化nmc的元数据结构
 #ifdef HNVCACHE_V1
 	if (nmc->cache_mode == FLASHCACHE_WRITE_BACK) {	
