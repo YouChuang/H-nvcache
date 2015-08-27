@@ -81,7 +81,13 @@ char *flashcache_sw_version = FLASHCACHE_SW_VERSION;
 
 static void flashcache_read_miss(struct cache_c *dmc, struct bio* bio,
 				 int index);
+
+#ifdef HNVCACHE_V2
+static void flashcache_write(struct hnvcache_c *hmc, struct bio* bio);
+#else
 static void flashcache_write(struct cache_c *dmc, struct bio* bio);
+#endif
+
 static int flashcache_inval_blocks(struct cache_c *dmc, struct bio *bio);
 static void flashcache_dirty_writeback(struct cache_c *dmc, int index);
 void flashcache_sync_blocks(struct cache_c *dmc);
@@ -1407,9 +1413,13 @@ flashcache_read_miss(struct cache_c *dmc, struct bio* bio,
 				     dmc->sysctl_clean_on_read_miss);
 	}
 }
-
+#ifdef HNVCACHE_V2
+static void
+flashcache_read(struct hnvcache_c *hmc, struct bio *bio)
+#else
 static void
 flashcache_read(struct cache_c *dmc, struct bio *bio)
+#endif
 {
 	int index;
 	int res;
@@ -1417,6 +1427,10 @@ flashcache_read(struct cache_c *dmc, struct bio *bio)
 	int queued;
 	unsigned long flags;
 	
+#ifdef HNVCACHE_V2
+	struct cache_c *dmc = hmc->flash_cache;
+#endif
+
 	DPRINTK("Got a %s for %llu (%u bytes)",
 	        (bio_rw(bio) == READ ? "READ":"READA"), 
 		bio->bi_sector, bio->bi_size);
@@ -1505,6 +1519,7 @@ flashcache_read(struct cache_c *dmc, struct bio *bio)
 	flashcache_read_miss(dmc, bio, index);
 }
 
+//对bio请求所在的分组进行加锁，若是牵涉到两个分组，则都加锁   升序加锁，防止死锁
 /*
  * Invalidation might require to grab locks on 2 cache sets. 
  * To prevent Lock Order Reversals (and deadlocks), always grab
@@ -1521,7 +1536,7 @@ flashcache_setlocks_multiget(struct cache_c *dmc, struct bio *bio)
 	if (start_set != end_set)
 		spin_lock(&dmc->cache_sets[end_set].set_spin_lock);
 }
-
+//释放锁
 static void
 flashcache_setlocks_multidrop(struct cache_c *dmc, struct bio *bio)
 {
@@ -1721,6 +1736,7 @@ flashcache_inval_block_set_v3(struct cache_c *dmc, int set, struct bio *bio,
 	return 1;
 }
 
+//将缓存块设置为失效  干净且没有请求访问的数据块直接回收到invalid列表，脏数据则写回磁盘，正在访问的数据块则继续等待
 static int
 flashcache_inval_blocks(struct cache_c *dmc, struct bio *bio)
 {	
@@ -1969,14 +1985,24 @@ flashcache_write_hit(struct cache_c *dmc, struct bio *bio, int index)
 	}
 }
 
+#ifdef HNVCACHE_V2
+static void
+flashcache_write(struct hnvcache_c *hmc, struct bio *bio)
+#else
 static void
 flashcache_write(struct cache_c *dmc, struct bio *bio)
+#endif
 {
 	int index;
 	int res;
 	struct cacheblock *cacheblk;
 	int queued;
-	
+
+#ifdef HNVCACHE_V2
+	struct cache_c *dmc = hmc->flash_cache;
+#endif
+
+
 	flashcache_setlocks_multiget(dmc, bio);
 	res = flashcache_lookup(dmc, bio, &index);
 	if (res != -1) {
@@ -2011,7 +2037,7 @@ flashcache_write(struct cache_c *dmc, struct bio *bio)
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,32)
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,36)
-#define bio_barrier(bio)        ((bio)->bi_rw & (1 << BIO_RW_BARRIER))
+#define bio_barrier(bio)        ((bio)->bi_rw & (1 << BIO_RW_BARRIER))//BIO_RW_BARRIER 提交Barrier IO 
 #else
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,37)
 #define bio_barrier(bio)        ((bio)->bi_rw & REQ_HARDBARRIER)
@@ -2048,20 +2074,24 @@ flashcache_map(struct dm_target *ti, struct bio *bio,
 flashcache_map(struct dm_target *ti, struct bio *bio)
 #endif
 {
-
-#ifdef HNVCACHE_V1
-	struct hnvcache_c *hmc = (struct hnvcache_c *) ti->private;
-	struct cache_c *dmc = hmc->flash_cache;
-	struct cache_c *nmc = hmc->nvram_cache;
-#else
-	struct cache_c *dmc = (struct cache_c *) ti->private;//ctr模块中初始化的结构通过dm_target的private属性传递过来
-#endif
-	int sectors = to_sector(bio->bi_size);
+	int sectors = to_sector(bio->bi_size);//请求的数据大小
 	int queued;
 	int uncacheable;
 	unsigned long flags;
+
+	struct cache_c *dmc;
+	struct cache_c *nmc;
+	struct hnvcache_c *hmc;
+#ifdef HNVCACHE_V2
+	hmc = (struct hnvcache_c *) ti->private;
+	dmc = hmc->flash_cache;
+	nmc = hmc->nvram_cache;
+#else
+	dmc = (struct cache_c *) ti->private;//ctr模块中初始化的结构通过dm_target的private属性传递过来
+#endif
+
 	
-	if (sectors <= 32)
+	if (sectors <= 32)//干什么用？
 		size_hist[sectors]++;
 
 	if (bio_barrier(bio))
@@ -2072,16 +2102,19 @@ flashcache_map(struct dm_target *ti, struct bio *bio)
 	 * expect them to be.
 	 */
 	flashcache_do_block_checks(dmc, bio);//检查bio请求的数据大小是否超过一个数据块大小以及是否在同一个数据块中
+#ifdef HNVCACHE_V1
+	flashcache_do_block_checks(nmc, bio);
+#endif
 
-	if (bio_data_dir(bio) == READ)
+	if (bio_data_dir(bio) == READ)//统计读写次数
 		dmc->flashcache_stats.reads++;
 	else
 		dmc->flashcache_stats.writes++;
 
-	spin_lock_irqsave(&dmc->ioctl_lock, flags);
-	if (unlikely(dmc->sysctl_pid_do_expiry && 
-		     (dmc->whitelist_head || dmc->blacklist_head)))
+	spin_lock_irqsave(&dmc->ioctl_lock, flags);//Spinlock的目的是用来同步SMP中会被多个CPU同时存取的变量
+	if (unlikely(dmc->sysctl_pid_do_expiry && (dmc->whitelist_head || dmc->blacklist_head)))
 		flashcache_pid_expiry_all_locked(dmc);
+	//判断是否可可缓存：绕过缓存参数生效、bio请求大小不等于正好的一个block大小、写操作且绕过模式下或缓存判断不可缓存
 	uncacheable = (unlikely(dmc->bypass_cache) ||
 		       (to_sector(bio->bi_size) != dmc->block_size) ||
 		       /* 
@@ -2092,22 +2125,33 @@ flashcache_map(struct dm_target *ti, struct bio *bio)
 			((dmc->cache_mode == FLASHCACHE_WRITE_AROUND) ||
 			 flashcache_uncacheable(dmc, bio))));
 	spin_unlock_irqrestore(&dmc->ioctl_lock, flags);
-	if (uncacheable) {
-		flashcache_setlocks_multiget(dmc, bio);
-		queued = flashcache_inval_blocks(dmc, bio);
-		flashcache_setlocks_multidrop(dmc, bio);
+	if (uncacheable) {//若是不能缓存
+		flashcache_setlocks_multiget(dmc, bio);//对分组进行加锁
+		queued = flashcache_inval_blocks(dmc, bio);//将请求所指向的缓存块设置为失效，因为最新的数据马上要写到磁盘中
+		flashcache_setlocks_multidrop(dmc, bio);//解锁
 		if (queued) {
 			if (unlikely(queued < 0))
 				flashcache_bio_endio(bio, -EIO, dmc, NULL);
 		} else {
 			/* Start uncached IO */
-			flashcache_start_uncached_io(dmc, bio);
+			flashcache_start_uncached_io(dmc, bio);//将bio请求发往磁盘进行读写操作
 		}
 	} else {
-		if (bio_data_dir(bio) == READ)
+		if (bio_data_dir(bio) == READ){
+#ifdef HNVCACHE_V2
+			flashcache_read(hmc, bio);
+#else
 			flashcache_read(dmc, bio);
-		else
-			flashcache_write(dmc, bio);
+#endif
+			//flashcache_read(dmc, bio);//读操作   这个地方不区分dmc或nmc  应该是hmc来作为参数  见面应该搞成一个方法
+		}
+		else{
+#ifdef HNVCACHE_V2
+			flashcache_write(hmc, bio);//写操作
+#else
+			flashcache_write(dmc, bio);//写操作
+#endif
+		}
 	}
 	return DM_MAPIO_SUBMITTED;
 }
@@ -2382,6 +2426,7 @@ flashcache_uncached_io_callback(unsigned long error, void *context)
 	schedule_work(&_kcached_wq);
 }
 
+//处理直接发往磁盘的请求
 static void
 flashcache_start_uncached_io(struct cache_c *dmc, struct bio *bio)
 {
@@ -2404,7 +2449,7 @@ flashcache_start_uncached_io(struct cache_c *dmc, struct bio *bio)
 	dm_io_async_bvec(1, &job->job_io_regions.disk,
 			 ((is_write) ? WRITE : READ), 
 			 bio->bi_io_vec + bio->bi_idx,
-			 flashcache_uncached_io_callback, job);
+			 flashcache_uncached_io_callback, job);//目标区域为disk，操作为write/read，源区域为bio请求的特定块中
 }
 
 EXPORT_SYMBOL(flashcache_io_callback);

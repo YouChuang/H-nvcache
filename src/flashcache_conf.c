@@ -404,6 +404,8 @@ flashcache_writeback_create(struct cache_c *dmc, int force)
 	int sectors_written = 0, sectors_expected = 0; /* debug */
 	int slots_written = 0; /* How many cache slots did we fill in this MD io block ? */
 	
+	printk("hnvcache:flashcache_writeback_create:cache_devname:%s\n", dmc->cache_devname);
+
 	header = (struct flash_superblock *)vmalloc(MD_BLOCK_BYTES(dmc));
 	if (!header) {
 		DMERR("flashcache_writeback_create: Unable to allocate sector");
@@ -412,7 +414,7 @@ flashcache_writeback_create(struct cache_c *dmc, int force)
 	where.bdev = dmc->cache_dev->bdev;//读取数据的位置为flash设备
 	where.sector = 0;//从设备位置0开始读取  首先读取的数据就是超级块
 	where.count = dmc->md_block_size;//读取的数据大小，一个元数据块的大小
-	error = flashcache_dm_io_sync_vm(dmc, &where, READ, header);//从缓存设备中读取superblock信息到header
+	error = flashcache_dm_io_sync_vm(dmc, &where, READ, header);//从缓存设备中读取superblock信息到header dmc不直接参与
 	if (error) {
 		vfree((void *)header);
 		DMERR("flashcache_writeback_create: Could not read cache superblock %lu error %d !",
@@ -438,7 +440,7 @@ flashcache_writeback_create(struct cache_c *dmc, int force)
 	dmc->size = (dmc->size / dmc->assoc) * dmc->assoc;//减去分组的余数，得到的是分组大小的整数倍个数的缓存数据空间数据块大小	
 	/* Recompute since dmc->size was possibly trunc'ed down */
 	dmc->md_blocks = INDEX_TO_MD_BLOCK(dmc, dmc->size) + 1 + 1;//重新调整元数据块的总个数
-	DMINFO("flashcache_writeback_create: md_blocks = %d, md_sectors = %d\n", 
+	DMINFO("hnvcache:flashcache_writeback_create: md_blocks = %d, md_sectors = %d\n", 
 	       dmc->md_blocks, dmc->md_blocks * MD_SECTORS_PER_BLOCK(dmc));
 	dev_size = to_sector(dmc->cache_dev->bdev->bd_inode->i_size);
 	cache_size = dmc->md_blocks * MD_SECTORS_PER_BLOCK(dmc) + (dmc->size * dmc->block_size);//元数据空间大小+数据空间大小
@@ -450,12 +452,13 @@ flashcache_writeback_create(struct cache_c *dmc, int force)
 		return 1;
 	}
 	order = dmc->size * sizeof(struct cacheblock);
-	DMINFO("Allocate %luKB (%luB per) mem for %lu-entry cache" \
+	DMINFO("hnvcache:Allocate %luKB (%luB per) mem for %lu-entry cache" \
 	       "(capacity:%luMB, associativity:%u, block size:%u " \
 	       "sectors(%uKB))",
 	       order >> 10, sizeof(struct cacheblock), dmc->size,
 	       cache_size >> (20-SECTOR_SHIFT), dmc->assoc, dmc->block_size,
 	       dmc->block_size >> (10-SECTOR_SHIFT));
+
 	//分配在内存中存放元数据的空间，并初始化  默认状态为INVALID，不可用，即缓存块的初始状态
 	//flash和nvram在内存中各自有自己的元数据结构
 	dmc->cache = (struct cacheblock *)vmalloc(order);
@@ -564,7 +567,7 @@ flashcache_writeback_create(struct cache_c *dmc, int force)
 	header->assoc = dmc->assoc;
 	header->disk_assoc = dmc->disk_assoc;
 	strncpy(header->disk_devname, dmc->disk_devname, DEV_PATHLEN);
-#ifdef HNVCACHE_V1
+#ifdef HNVCACHE_V2
 #else
 #endif
 	//新增 存放真正的cache_devname   以后再考虑怎么处理  目前hnvcache_c还没考虑好怎么处理superblock
@@ -577,7 +580,7 @@ flashcache_writeback_create(struct cache_c *dmc, int force)
 	where.sector = 0;
 	where.count = dmc->md_block_size;
 	
-	printk("flashcache-dbg: cachedev check - %s %s", header->cache_devname,
+	printk("hnvcache:flashcache-dbg: cachedev check - %s %s", header->cache_devname,
 				dmc->dm_vdevname);
 	
 	error = flashcache_dm_io_sync_vm(dmc, &where, WRITE, header);
@@ -907,7 +910,7 @@ flashcache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		r = ENOMEM;
 		goto bad;
 	}
-#ifdef HNVCACHE_V1
+////#ifdef HNVCACHE_V1
 	//新增 给hmc和nmc对象分配空间
 	hmc = kzalloc(sizeof(*hmc), GFP_KERNEL);
 	if (hmc == NULL) {
@@ -921,61 +924,51 @@ flashcache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		r = ENOMEM;
 		goto bad;
 	}
-#endif
+////#endif
 
 //echo 0 20971520 flashcache /dev/loop0 /dev/pmb /dev/pma cache1g8g 1 2 8 0 0 512 266287972864 8 | dmsetup create cache1g8g
 	//新增 将dm_target赋值给hncache_c
-#ifdef HNVCACHE_V1
+
+#ifdef HNVCACHE_V2
 	hmc->tgt = ti;
 #endif
 	dmc->tgt = ti;//初始化虚拟设备dm_target
 
 	//新增 hnvcache的cache_c属性赋值
-#ifdef HNVCACHE_V1
+////#ifdef HNVCACHE_V1
 	hmc->flash_cache = dmc;
 	hmc->nvram_cache = nmc;
-#endif
+////#endif
 
 	if ((r = flashcache_get_dev(ti, argv[0], &dmc->disk_dev, 
 				    dmc->disk_devname, ti->len))) {
 		if (r == -EBUSY)
-			ti->error = "flashcache: Disk device is busy, cannot create cache";
+			ti->error = "flashcache:dmc: Disk device is busy, cannot create cache";
 		else
-			ti->error = "flashcache: Disk device lookup failed";
+			ti->error = "flashcache:dmc: Disk device lookup failed";
 		goto bad1;
 	}
 
 	//新增 hmc和nmc也需要获取disk设备，后面的flash、nvram设备同样，三个对象都要有这三个属性
-#ifdef HNVCACHE_V1
+////#ifdef HNVCACHE_V1
 	if ((r = flashcache_get_dev(ti, argv[0], &hmc->disk_dev, 
 				    hmc->disk_devname, ti->len))) {
 		if (r == -EBUSY)
-			ti->error = "flashcache: Disk device is busy, cannot create cache";
+			ti->error = "flashcache:hmc: Disk device is busy, cannot create cache";
 		else
-			ti->error = "flashcache: Disk device lookup failed";
+			ti->error = "flashcache:hmc: Disk device lookup failed";
 		goto bad1;
 	}
 	if ((r = flashcache_get_dev(ti, argv[0], &nmc->disk_dev, 
 				    nmc->disk_devname, ti->len))) {
 		if (r == -EBUSY)
-			ti->error = "flashcache: Disk device is busy, cannot create cache";
+			ti->error = "flashcache:nmc: Disk device is busy, cannot create cache";
 		else
-			ti->error = "flashcache: Disk device lookup failed";
+			ti->error = "flashcache:nmc: Disk device lookup failed";
 		goto bad1;
 	}
-#endif
+////#endif
 
-	//新增  在hmc中dmc为flash_dev  nmc为nvram_dev
-#ifdef HNVCACHE_V1
-	if ((r = flashcache_get_dev(ti, argv[1], &hmc->flash_dev,
-				    hmc->flash_devname, 0))) {
-		if (r == -EBUSY)
-			ti->error = "flashcache: Flash device is busy, cannot create cache";
-		else
-			ti->error = "flashcache: Flash device lookup failed";
-		goto bad2;
-	}
-#endif
 	if ((r = flashcache_get_dev(ti, argv[1], &dmc->cache_dev,
 				    dmc->cache_devname, 0))) {
 		if (r == -EBUSY)
@@ -984,11 +977,32 @@ flashcache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 			ti->error = "flashcache: Cache device lookup failed";
 		goto bad2;
 	}
+	//新增  在hmc中dmc为flash_dev  nmc为nvram_dev
+////#ifdef HNVCACHE_V1
+	if ((r = flashcache_get_dev(ti, argv[1], &hmc->flash_dev,
+				    hmc->flash_devname, 0))) {
+		if (r == -EBUSY)
+			ti->error = "flashcache: Flash device is busy, cannot create cache";
+		else
+			ti->error = "flashcache: Flash device lookup failed";
+		goto bad2;
+	}
+////#endif
+
 
 
 	//新增 引入hmc
-#ifdef HNVCACHE_V1
+////#ifdef HNVCACHE_V1
 	//新增 初始化nvram_dev设备
+	if ((r = flashcache_get_dev(ti, argv[2], &nmc->cache_dev,
+				    nmc->cache_devname, 0))) {
+		if (r == -EBUSY)
+			ti->error = "flashcache: NVRAM device is busy, cannot create cache";
+		else
+			ti->error = "flashcache: NVRAM device lookup failed";
+		goto bad3;
+	}
+
 	if ((r = flashcache_get_dev(ti, argv[2], &hmc->nvram_dev,
 				    hmc->nvram_devname, 0))) {
 		if (r == -EBUSY)
@@ -998,18 +1012,10 @@ flashcache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		goto bad3;
 	}
 
-	if ((r = flashcache_get_dev(ti, argv[2], &nmc->cache_dev,
-				    nmc->cache_devname, 0))) {
-		if (r == -EBUSY)
-			ti->error = "flashcache: NVRAM device is busy, cannot create cache";
-		else
-			ti->error = "flashcache: NVRAM device lookup failed";
-		goto bad3;
-	}
-#endif
+////#endif
 
 	//新增 引入hmc
-#ifdef HNVCACHE_V1
+////#ifdef HNVCACHE_V1
 	//新增  hmc和nmc都存放dm_vdevname
 	if (sscanf(argv[3], "%s", (char *)&hmc->dm_vdevname) != 1) {
 		ti->error = "flashcache: Virtual device name lookup failed";
@@ -1019,7 +1025,7 @@ flashcache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		ti->error = "flashcache: Virtual device name lookup failed";
 		goto bad4;
 	}
-#endif
+////#endif
 	//新增  修改了下面所有的bad3为bad4
 	if (sscanf(argv[3], "%s", (char *)&dmc->dm_vdevname) != 1) {
 		ti->error = "flashcache: Virtual device name lookup failed";
@@ -1027,14 +1033,14 @@ flashcache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	}
 
 
-#ifdef HNVCACHE_V1	
+////#ifdef HNVCACHE_V1	
 	//新增 初始化nmc  destroyq nr_jobs remove_in_prog这三个属性应该是具体缓存设备需要的
 	r = flashcache_kcached_init(nmc);
 	if (r) {
 		ti->error = "Failed to initialize kcached";
 		goto bad4;
 	}
-#endif
+////#endif
 	r = flashcache_kcached_init(dmc);
 	if (r) {
 		ti->error = "Failed to initialize kcached";
@@ -1054,10 +1060,10 @@ flashcache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		r = -EINVAL;
 		goto bad4;
 	}
-#ifdef HNVCACHE_V1
+////#ifdef HNVCACHE_V1
 	//新增 nmc的cache_mode默认与dmc相同  WB   WT和WA模式暂时不考虑
 	nmc->cache_mode = dmc->cache_mode;
-#endif
+////#endif
 
 	//处理WB模式 nmc与dmc的缓存模式目前相同，所以就暂时不作区分，另外persistence不属于设备的具体参数，所以不用赋值
 	/* 
@@ -1107,12 +1113,12 @@ flashcache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	dmc->block_shift = ffs(dmc->block_size) - 1;//求出移位个数
 	dmc->block_mask = dmc->block_size - 1;//求出掩码的值
 
-#ifdef HNVCACHE_V1
+////#ifdef HNVCACHE_V1
 	//新增 nmc的block_size、block_shift、block_mask默认与dmc相同
 	nmc->block_size = dmc->block_size;
 	nmc->block_shift = dmc->block_shift;
 	nmc->block_mask = dmc->block_mask;
-#endif
+////#endif
 
 	/* dmc->size is specified in sectors here, and converted to blocks later */
 	if (argc >= 8) {//新增 从7改为8 
@@ -1145,7 +1151,7 @@ flashcache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	if (!dmc->size)//如果传入的flash缓存空间大小为0，则设置为整个flash设备的大小  转换为sector格式
 		dmc->size = to_sector(dmc->cache_dev->bdev->bd_inode->i_size);
 
-#ifdef HNVCACHE_V1
+////#ifdef HNVCACHE_V1
 	//新增 获取nvram缓存空间大小
 	if (argc >= 9) {//新增 从7改为8 
 		if (sscanf(argv[8], "%lu", &nmc->size) != 1) {
@@ -1156,7 +1162,7 @@ flashcache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	}
 	if (!nmc->size)
 		nmc->size = to_sector(nmc->cache_dev->bdev->bd_inode->i_size);
-#endif
+////#endif
 
 	if (argc >= 10) {//获取缓存分组大小
 		if (sscanf(argv[9], "%u", &dmc->assoc) != 1) {
@@ -1177,11 +1183,11 @@ flashcache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		dmc->assoc = DEFAULT_CACHE_ASSOC;//默认的分组大小 512
 	dmc->assoc_shift = ffs(dmc->assoc) - 1;//移位个数
 
-#ifdef HNVCACHE_V1
+////#ifdef HNVCACHE_V1
 	//新增 nmc的分组大小和移位默认与dmc相同，
 	nmc->assoc = dmc->assoc;
 	nmc->assoc_shift = dmc->assoc_shift;
-#endif
+////#endif
 
 	if (argc >= 11) {
 		if (sscanf(argv[10], "%u", &dmc->disk_assoc) != 1) {
@@ -1204,11 +1210,11 @@ flashcache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	if (dmc->disk_assoc != 0)
 		dmc->disk_assoc_shift = ffs(dmc->disk_assoc) - 1;
 
-#ifdef HNVCACHE_V1
+////#ifdef HNVCACHE_V1
 	//新增 nmc中也要有disk_assoc属性  与dmc相同  毕竟两者的绝大多数属性都是想通的
 	nmc->disk_assoc = dmc->disk_assoc;
 	nmc->disk_assoc_shift = dmc->disk_assoc_shift;
-#endif
+////#endif
 
 	//WB模式下是有缓存的，所以可以设置元数据大小
 	if (dmc->cache_mode == FLASHCACHE_WRITE_BACK) {
@@ -1243,10 +1249,10 @@ flashcache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		}
 	}
 
-#ifdef HNVCACHE_V1
+////#ifdef HNVCACHE_V1
 	//新增 nmc的元数据块大小也与dmc相同
 	nmc->md_block_size = dmc->md_block_size;
-#endif
+////#endif
 
 	//到此为止，所有初始化参数已经接收完毕，开始进行具体的数据操作
 	//前面的接收参数操作暂时不修改，只需要把需要的信息，初始化到hnvcache_c中皆可
@@ -1269,9 +1275,12 @@ flashcache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		}
 	} else
 		flashcache_writethrough_create(dmc);
-		
+
+	printk("\nhnvcache:nmc:cache_devname:%s\n", nmc->cache_devname);
+	//printk("\nhnvcache:nmc:nr_jobs:%d\n", nmc->nr_jobs);
+
 	//新增 调用flashcache_writeback_create初始化nmc的元数据结构
-#ifdef HNVCACHE_V1
+////#ifdef HNVCACHE_V1
 	if (nmc->cache_mode == FLASHCACHE_WRITE_BACK) {	
 		if (persistence == CACHE_CREATE) {
 			if (flashcache_writeback_create(nmc, 0)) {
@@ -1288,7 +1297,7 @@ flashcache_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		}
 	} else
 		flashcache_writethrough_create(nmc);
-#endif
+////#endif
 
 init:
 #ifdef HNVCACHE_V1
@@ -1517,7 +1526,7 @@ init:
 	ti->max_io_len = dmc->block_size;
 #endif
 
-#ifdef HNVCACHE_V1
+#ifdef HNVCACHE_V2
 	ti->private = hmc;
 #else
 	ti->private = dmc;//告诉上层
@@ -1758,10 +1767,19 @@ flashcache_dtr_stats_print(struct cache_c *dmc)
 void 
 flashcache_dtr(struct dm_target *ti)
 {
-	struct cache_c *dmc = (struct cache_c *) ti->private;
+	//struct cache_c *dmc = (struct cache_c *) ti->private;
 	struct cache_c **nodepp;
 	int i;
 	int nr_queued = 0;
+
+	struct cache_c *dmc;
+	struct hnvcache_c *hmc;
+#ifdef HNVCACHE_V2
+	hmc = (struct hnvcache_c *)ti->private;
+	dmc = hmc->flash_cache;
+#else
+	dmc = (struct cache_c *) ti->private;
+#endif
 
 	flashcache_dtr_procfs(dmc);
 
@@ -1993,7 +2011,16 @@ flashcache_status(struct dm_target *ti, status_type_t type,
 		  char *result, unsigned int maxlen)
 #endif
 {
-	struct cache_c *dmc = (struct cache_c *) ti->private;
+	struct cache_c *dmc;
+	struct hnvcache_c *hmc;
+#ifdef HNVCACHE_V2
+	hmc = (struct hnvcache_c *)ti->private;
+	dmc = hmc->flash_cache;
+#else
+	dmc = (struct cache_c *) ti->private;
+#endif
+
+	//struct cache_c *dmc = (struct cache_c *) ti->private;
 	
 	switch (type) {
 	case STATUSTYPE_INFO:

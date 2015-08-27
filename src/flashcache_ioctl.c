@@ -296,6 +296,7 @@ flashcache_pid_expiry_all_locked(struct cache_c *dmc)
 	dmc->pid_expire_check = jiffies + (dmc->sysctl_pid_expiry_secs + 1) * HZ;
 }
 
+//判断是否缓存，进程黑白名单
 /*
  * Is the IO cacheable, depending on global cacheability and the white/black
  * lists ? This function is a bit confusing because we want to support inheritance
@@ -512,11 +513,22 @@ flashcache_ioctl(struct dm_target *ti, struct inode *inode,
 flashcache_ioctl(struct dm_target *ti, unsigned int cmd, unsigned long arg)
 #endif
 {
-	struct cache_c *dmc = (struct cache_c *) ti->private;
-	struct block_device *bdev = dmc->disk_dev->bdev;
+	struct block_device *bdev;
 	struct file fake_file = {};
 	struct dentry fake_dentry = {};
 	pid_t pid;
+
+	struct cache_c *dmc;
+	struct hnvcache_c *hmc;
+#ifdef HNVCACHE_V2
+	hmc = (struct hnvcache_c *)ti->private;
+	dmc = hmc->flash_cache;
+#else
+	dmc = (struct cache_c *) ti->private;
+#endif
+	//struct cache_c *dmc = (struct cache_c *) ti->private;
+
+	bdev = dmc->disk_dev->bdev;
 
 	switch(cmd) {
 	case FLASHCACHEADDBLACKLIST:

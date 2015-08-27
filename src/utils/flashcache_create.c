@@ -278,8 +278,8 @@ main(int argc, char **argv)
 		usage(pname);
 	disk_devname = argv[optind];
 	//新增 对nvram路径名/磁盘分组大小的输出 
-	printf("cachedev %s, nvram_devname %s, flash_devname %s, disk_devname %s cache_mode %s disk_associativity %lu\n", 
-	       cachedev, nvram_devname, flash_devname, disk_devname, cache_mode_str, disk_associativity);
+	//printf("cachedev %s, nvram_devname %s, flash_devname %s, disk_devname %s cache_mode %s disk_associativity %lu\n", 
+	//       cachedev, nvram_devname, flash_devname, disk_devname, cache_mode_str, disk_associativity);
 	if (cache_mode == FLASHCACHE_WRITE_BACK)
 		printf("FLASHCACHE_WRITE_BACK:block_size %lu, md_block_size %lu, cache_size %lu\n", 
 		       block_size, md_block_size, cache_size);
@@ -453,14 +453,35 @@ echo 0 20971520 flashcache /dev/loop0 /dev/pmb /dev/pma cache1g8g 1 2 8 0 0 512 
 echo 0 20971520 flashcache /dev/loop0 /dev/pmb cachehaha 1 2 8 0 512 140733193388544 8 | dmsetup create cachehaha
 	*/
 	/*
+umount /dev/mapper/cachecache
 dmsetup remove cachecache
 rmmod flashcache
-flashcache_destroy /dev/pma
+flashcache_destroy /dev/pmb
+
+
+make && make install
+modprobe pmbd mode="pmbd1,8;hmo50;hms9;pmapY;rdsx1,2;wrsx1,12;"
+fdisk -l
+losetup /dev/loop0 /home/disk.img 
+
+dd if=/dev/zero of=/root/workspace/disk.img bs=1024k count=131072
+
+
 
 make KERNEL_TREE=/usr/src/kernels/2.6.32-504.12.2.el6.x86_64/ && make install
 modprobe flashcache
+lsmod | grep flashcache
+flashcache_create -p back cachecache /dev/pma /dev/pmb /dev/loop0
+
 flashcache_create -p back cachecache /dev/pma /dev/loop0
 
+mkfs.ext3 /dev/mapper/cachecache
+mount /dev/mapper/cachecache /home/mount
+fio -filename=/home/mount/file.1G -direct=1 -iodepth 1 -thread -rw=randread -ioengine=psync -bs=16k -size=1G -numjobs=10 -runtime=1000 -group_reporting -name=mytest 
+
+
+echo 0 20971520 flashcache disk=/dev/loop0 ssd=/dev/pmb nvram=/dev/pma cachedev=cachecache cachemode=1 2 blocksize=8 cachesize=0 nvramsize=0 assoc=512 diskassoc=512 md_block_size=8 | dmsetup create cachecache
+echo 0 20971520 flashcache /dev/loop0 /dev/pmb /dev/pma cachecache 1 2 8 0 0 512 512 8 | dmsetup create cachecache
 
 	*/
 

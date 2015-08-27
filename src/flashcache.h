@@ -125,6 +125,7 @@ MUST DISABLE IRQs.
 
 //新增 版本控制方法  #ifdef  #endif
 //#define HNVCACHE_V1
+#define HNVCACHE_V2
 
 #if 0
 #define FLASHCACHE_DO_CHECKSUMS
@@ -385,7 +386,7 @@ struct cache_c {
 	 * bypass the cache completely. If the SSD dies or is removed, 
 	 * we want to continue sending requests to the device.
 	 */
-	int bypass_cache;
+	int bypass_cache;//绕过缓存选项，写穿透、写绕过模式下若是ssd返回错误、若是在ssd失效或者被移除的情况下还有发来的请求
 
 	//系统控制的选项，暂时先不考虑
 	/* Per device sysctls */
@@ -687,7 +688,7 @@ struct flash_superblock {
 	u_int32_t cache_sb_state;	/* Clean shutdown ? */
 	//新增 临时存放真正的cache_devname
 	char cache_devname_back[DEV_PATHLEN]; 
-	
+
 	char cache_devname[DEV_PATHLEN]; /* Contains dm_vdev name as of v2 modifications */
 	sector_t cache_devsize;
 	char disk_devname[DEV_PATHLEN]; /* underlying block device name (use UUID paths!) */
